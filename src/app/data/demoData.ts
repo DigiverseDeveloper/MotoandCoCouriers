@@ -1,0 +1,85 @@
+import type { Customer, Driver, Job } from '../domain/types';
+
+export const demoCustomers: Customer[] = [
+  {
+    id: 'c-demo-1',
+    name: 'Demo Customer',
+    email: 'customer@example.invalid',
+    phone: '0400 000 000',
+    company: 'Demo Company',
+    createdAt: '2026-05-01T00:00:00Z',
+  },
+];
+
+export const demoDrivers: Driver[] = [
+  {
+    id: 'd-demo-1',
+    name: 'Demo Rider',
+    email: 'driver@example.invalid',
+    phone: '0400 000 001',
+    vehicleType: 'Motorcycle',
+    status: 'Available',
+    rating: 4.8,
+    completedJobs: 24,
+  },
+  {
+    id: 'd-demo-2',
+    name: 'Demo Van Driver',
+    email: 'van-driver@example.invalid',
+    phone: '0400 000 002',
+    vehicleType: 'Van',
+    status: 'Busy',
+    rating: 4.7,
+    completedJobs: 31,
+  },
+];
+
+export const demoJobs: Job[] = [
+  {
+    id: 'j-demo-1',
+    customerId: 'c-demo-1',
+    driverId: 'd-demo-1',
+    status: 'In Transit',
+    pickupAddress: 'Melbourne CBD pickup zone',
+    pickupContactName: 'Pickup contact',
+    pickupContactPhone: '0400 000 010',
+    pickupTime: '2026-05-10T00:00:00Z',
+    deliveryAddress: 'Melbourne CBD delivery zone',
+    deliveryContactName: 'Delivery contact',
+    deliveryContactPhone: '0400 000 011',
+    packageSize: 'Small',
+    packageDescription: 'Business documents',
+    vehicleType: 'Motorcycle',
+    urgency: 'Express',
+    estimatedPrice: 35,
+    createdAt: '2026-05-09T23:15:00Z',
+    updatedAt: '2026-05-10T00:15:00Z',
+    statusHistory: [
+      { status: 'Pending', timestamp: '2026-05-09T23:15:00Z' },
+      { status: 'Assigned', timestamp: '2026-05-09T23:20:00Z' },
+      { status: 'Accepted', timestamp: '2026-05-09T23:25:00Z' },
+      { status: 'Picked Up', timestamp: '2026-05-10T00:00:00Z' },
+      { status: 'In Transit', timestamp: '2026-05-10T00:15:00Z' },
+    ],
+  },
+  {
+    id: 'j-demo-2',
+    customerId: 'c-demo-1',
+    status: 'Pending',
+    pickupAddress: 'Inner north pickup zone',
+    pickupContactName: 'Pickup contact',
+    pickupContactPhone: '0400 000 012',
+    pickupTime: '2026-05-10T03:30:00Z',
+    deliveryAddress: 'Inner south delivery zone',
+    deliveryContactName: 'Delivery contact',
+    deliveryContactPhone: '0400 000 013',
+    packageSize: 'Medium',
+    packageDescription: 'Office supplies',
+    vehicleType: 'Van',
+    urgency: 'Same Day',
+    estimatedPrice: 55,
+    createdAt: '2026-05-10T01:00:00Z',
+    updatedAt: '2026-05-10T01:00:00Z',
+    statusHistory: [{ status: 'Pending', timestamp: '2026-05-10T01:00:00Z' }],
+  },
+];
