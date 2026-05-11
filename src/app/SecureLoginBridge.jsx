@@ -31,6 +31,10 @@ export default function SecureLoginBridge({ children }) {
       const url = typeof input === "string" ? input : input?.url;
       const method = String(init?.method || "GET").toUpperCase();
       const isLogin = method === "POST" && String(url || "").endsWith("/auth/login");
+      const isRequestCode = method === "POST" && String(url || "").endsWith("/auth/request-code");
+      const isVerifyCode = method === "POST" && String(url || "").endsWith("/auth/verify-code");
+      if (isRequestCode) return originalFetch(loginCodePath("request-code"), init);
+      if (isVerifyCode) return originalFetch(loginCodePath("verify-code"), init);
       if (!isLogin) return originalFetch(input, init);
 
       let payload = {};
