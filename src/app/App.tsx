@@ -1,5 +1,10 @@
 import MotoCoLogistics from './MotoCoLogistics.jsx';
+import SecureLoginBridge from './SecureLoginBridge.jsx';
 
 export default function App() {
-  return <MotoCoLogistics />;
+  return (
+    <SecureLoginBridge>
+      <MotoCoLogistics />
+    </SecureLoginBridge>
+  );
 }
