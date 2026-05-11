@@ -18,16 +18,37 @@ function isInvoice(url, method) {
   return method === "POST" && String(url || "").endsWith("/zoho/books/invoice");
 }
 
+function isVerifyCode(url, method) {
+  return method === "POST" && String(url || "").endsWith("/auth/verify-code");
+}
+
 function copy(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function mergeOrders(baseOrders = [], zohoOrders = []) {
+  const byId = new Map();
+  for (const order of baseOrders) byId.set(order.id, order);
+  for (const order of zohoOrders) byId.set(order.id, { ...byId.get(order.id), ...order });
+  return [...byId.values()];
 }
 
 export default function ZohoDealBridge({ children }) {
   const previousStoreRef = useRef(null);
   const dealIdsRef = useRef(new Map());
+  const lastUserRef = useRef(null);
 
   useEffect(() => {
     const originalFetch = window.fetch.bind(window);
+
+    async function pullZohoOrdersFor(user) {
+      if (!user?.email) return [];
+      const qs = new URLSearchParams({ role: user.role || "", email: user.email });
+      const response = await originalFetch(`/.netlify/functions/deals-workspace?${qs.toString()}`);
+      if (!response.ok) return [];
+      const body = await response.json().catch(() => ({}));
+      return Array.isArray(body.orders) ? body.orders : [];
+    }
 
     async function createDeal(order) {
       const response = await originalFetch(`${API_BASE}/zoho/crm/deal`, {
@@ -67,7 +88,7 @@ export default function ZohoDealBridge({ children }) {
             console.error(error);
             return null;
           });
-          if (dealId) order.zohoDealId = dealId;
+          if (dealId) order.zoDealId = dealId;
         }
 
         if (previous && previous.status !== order.status) {
@@ -87,6 +108,14 @@ export default function ZohoDealBridge({ children }) {
     window.fetch = async (input, init = {}) => {
       const url = typeof input === "string" ? input : input?.url;
       const method = String(init?.method || "GET").toUpperCase();
+
+      if (isVerifyCode(url, method)) {
+        const response = await originalFetch(input, init);
+        const clone = response.clone();
+        const body = await clone.json().catch(() => ({}));
+        if (response.ok && body.user) lastUserRef.current = body.user;
+        return response;
+      }
 
       if (isSnapshot(url, method)) {
         let payload = {};
@@ -132,10 +161,23 @@ export default function ZohoDealBridge({ children }) {
         const clone = response.clone();
         const body = await clone.json().catch(() => ({}));
         if (body.store) {
-          previousStoreRef.current = copy(body.store);
-          for (const order of body.store.orders || []) {
+          const zohoOrders = await pullZohoOrdersFor(lastUserRef.current).catch(error => {
+            console.error(error);
+            return [];
+          });
+          const store = {
+            ...body.store,
+            orders: mergeOrders(body.store.orders || [], zohoOrders),
+          };
+          previousStoreRef.current = copy(store);
+          for (const order of store.orders || []) {
             if (order.zohoDealId) dealIdsRef.current.set(order.id, order.zohoDealId);
           }
+          return new Response(JSON.stringify({ ...body, store }), {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+          });
         }
       }
 
