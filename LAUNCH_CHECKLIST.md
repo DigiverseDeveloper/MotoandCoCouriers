@@ -13,6 +13,7 @@
   - Deal appears in the Couriers pipeline at Order Placed.
   - Zoho stage changes pull back into the app for the right customer.
   - Driver/admin updates push stage changes back to Zoho.
+  - Admin/driver workspace sees the full live Couriers pipeline while customers see only their own deals.
 
 ## Built Locally - Needs Live Retest
 
@@ -23,9 +24,10 @@
   - Delivered
   - Invoiced
   - Paid - future use
+- Tighten customer view so customers only see their own pickup requests.
+- Tighten admin/driver views around the live deal pipeline.
 - Check the live deploy after ZeptoMail is approved and login testing can proceed.
 
 ## Next Build Work
 
-- Tighten customer view so customers only see their own pickup requests.
-- Tighten admin/driver views around the live deal pipeline.
+- Prepare Zoho Books invoice flow and required Books environment variables.
