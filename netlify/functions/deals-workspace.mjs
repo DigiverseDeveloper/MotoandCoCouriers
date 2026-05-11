@@ -2,6 +2,7 @@ const zohoAccountsUrl = (process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho
 const zohoApiDomain = (process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com.au').replace(/\/$/, '');
 const zohoCrmVersion = process.env.ZOHO_CRM_VERSION || 'v8';
 const tokenCache = new Map();
+const staffEmails = new Set(['admin@motoandco.com.au', 'jake@motoandco.com.au']);
 
 function response(statusCode, body) {
   return {
@@ -170,10 +171,18 @@ export async function handler(event) {
 
   try {
     const { role, email } = event.queryStringParameters || {};
+    const cleanEmail = normaliseEmail(email);
+    if (!cleanEmail || !['client', 'admin', 'driver'].includes(role || '')) {
+      return response(200, { orders: [], mode: 'unauthenticated' });
+    }
+    if (role !== 'client' && !staffEmails.has(cleanEmail)) {
+      return response(200, { orders: [], mode: 'unauthorised' });
+    }
+
     const token = await accessTokenForCRM();
     if (!token) return response(200, { orders: [], mode: 'placeholder' });
 
-    const contact = role === 'client' ? await contactByEmail(token, email) : null;
+    const contact = role === 'client' ? await contactByEmail(token, cleanEmail) : null;
     if (role === 'client' && !contact) return response(200, { orders: [], mode: 'live' });
 
     const pipeline = dealPipeline();
