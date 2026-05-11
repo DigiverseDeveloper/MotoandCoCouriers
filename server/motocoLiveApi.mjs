@@ -23,8 +23,11 @@ function loadEnvFile() {
 loadEnvFile();
 
 const port = Number(process.env.MOTOCO_API_PORT || 8790);
+const zohoAccountsUrl = (process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho.com.au').replace(/\/$/, '');
 const zohoApiDomain = (process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com.au').replace(/\/$/, '');
 const zohoCrmVersion = process.env.ZOHO_CRM_VERSION || 'v8';
+const tokenCache = new Map();
+const loginCodes = new Map();
 
 const initialStore = {
   users: [
@@ -87,6 +90,10 @@ function compact(value) {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null && item !== ''));
 }
 
+function normaliseEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
 function splitName(name = '') {
   const parts = String(name).trim().split(/\s+/).filter(Boolean);
   if (parts.length <= 1) return { firstName: '', lastName: parts[0] || 'Client' };
@@ -115,8 +122,42 @@ async function zohoRequest({ path, token, method = 'GET', body }) {
   return data;
 }
 
+async function accessTokenFor(service) {
+  const directToken = process.env[`ZOHO_${service}_ACCESS_TOKEN`];
+  const refreshToken = process.env[`ZOHO_${service}_REFRESH_TOKEN`] || process.env.ZOHO_REFRESH_TOKEN;
+  const clientId = process.env.ZOHO_CLIENT_ID;
+  const clientSecret = process.env.ZOHO_CLIENT_SECRET;
+
+  if (!refreshToken) return directToken;
+  if (!clientId || !clientSecret) return directToken;
+
+  const cacheKey = `${service}:${refreshToken}`;
+  const cached = tokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now() + 60000) return cached.token;
+
+  const params = new URLSearchParams({
+    refresh_token: refreshToken,
+    client_id: clientId,
+    client_secret: clientSecret,
+    grant_type: 'refresh_token',
+  });
+
+  const res = await fetch(`${zohoAccountsUrl}/oauth/v2/token?${params.toString()}`, { method: 'POST' });
+  const data = await res.json();
+  if (!res.ok || !data.access_token) {
+    throw new Error(data.error_description || data.error || 'Could not refresh Zoho access token.');
+  }
+
+  tokenCache.set(cacheKey, {
+    token: data.access_token,
+    expiresAt: Date.now() + Number(data.expires_in || 3600) * 1000,
+  });
+  return data.access_token;
+}
+
 async function zohoCRMClient(client) {
-  if (!process.env.ZOHO_CRM_ACCESS_TOKEN) {
+  const token = await accessTokenFor('CRM');
+  if (!token) {
     return {
       success: true,
       mode: 'placeholder',
@@ -125,7 +166,6 @@ async function zohoCRMClient(client) {
     };
   }
 
-  const token = process.env.ZOHO_CRM_ACCESS_TOKEN;
   const { firstName, lastName } = splitName(client.name);
   const account = await zohoRequest({
     token,
@@ -173,11 +213,12 @@ async function zohoCRMClient(client) {
 }
 
 async function zohoBooksInvoice({ client, deliveries = [], monthLabel, total }) {
+  const token = await accessTokenFor('BOOKS');
   const customerId = client.zohoBooksCustomerId || process.env.ZOHO_BOOKS_FALLBACK_CUSTOMER_ID;
   const organisationId = process.env.ZOHO_BOOKS_ORGANIZATION_ID;
   const itemId = process.env.ZOHO_BOOKS_SERVICE_ITEM_ID;
   const missing = [
-    !process.env.ZOHO_BOOKS_ACCESS_TOKEN && 'ZOHO_BOOKS_ACCESS_TOKEN',
+    !token && 'ZOHO_BOOKS_REFRESH_TOKEN or ZOHO_BOOKS_ACCESS_TOKEN',
     !organisationId && 'ZOHO_BOOKS_ORGANIZATION_ID',
     !customerId && 'Zoho Books customer_id on client or ZOHO_BOOKS_FALLBACK_CUSTOMER_ID',
     !itemId && 'ZOHO_BOOKS_SERVICE_ITEM_ID',
@@ -212,7 +253,7 @@ async function zohoBooksInvoice({ client, deliveries = [], monthLabel, total }) 
   }
 
   const invoice = await zohoRequest({
-    token: process.env.ZOHO_BOOKS_ACCESS_TOKEN,
+    token,
     method: 'POST',
     path: `/books/v3/invoices?organization_id=${encodeURIComponent(organisationId)}`,
     body: {
@@ -234,7 +275,8 @@ async function zohoBooksInvoice({ client, deliveries = [], monthLabel, total }) 
 }
 
 async function zohoCRMContacts() {
-  if (!process.env.ZOHO_CRM_ACCESS_TOKEN) {
+  const token = await accessTokenFor('CRM');
+  if (!token) {
     const store = readStore();
     return store.clients.map(client => ({
       id: client.id,
@@ -246,7 +288,7 @@ async function zohoCRMContacts() {
   }
 
   const response = await zohoRequest({
-    token: process.env.ZOHO_CRM_ACCESS_TOKEN,
+    token,
     path: `/crm/${zohoCrmVersion}/Contacts?fields=Full_Name,Email,Phone,Account_Name`,
   });
 
@@ -257,6 +299,124 @@ async function zohoCRMContacts() {
     business: contact.Account_Name?.name,
     phone: contact.Phone,
   }));
+}
+
+function crmContactToClient(contact) {
+  return {
+    id: `crm_${contact.id}`,
+    role: 'client',
+    name: contact.Full_Name || [contact.First_Name, contact.Last_Name].filter(Boolean).join(' ') || contact.Email,
+    email: contact.Email,
+    phone: contact.Phone || '',
+    businessName: contact.Account_Name?.name || contact.Full_Name || contact.Email,
+    deliveryAddress: contact.Mailing_Street || '',
+    vendors: [],
+    zohoContactId: contact.id,
+    zohoAccountId: contact.Account_Name?.id,
+  };
+}
+
+async function zohoCRMClientByEmail(email) {
+  const token = await accessTokenFor('CRM');
+  if (!token || !email) return null;
+
+  const response = await zohoRequest({
+    token,
+    path: `/crm/${zohoCrmVersion}/Contacts/search?email=${encodeURIComponent(email)}`,
+  });
+  const contact = (response.data || [])[0];
+  return contact ? crmContactToClient(contact) : null;
+}
+
+function makeLoginCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+async function sendLoginCodeEmail(email, code) {
+  const from = process.env.LOGIN_EMAIL_FROM || process.env.ZEPTO_FROM_EMAIL;
+  const token = process.env.ZEPTO_MAIL_TOKEN || process.env.ZEPTOMAIL_TOKEN;
+
+  if (!from || !token) {
+    console.log(`Moto & Co login code for ${email}: ${code}`);
+    return { sent: false, mode: 'console', message: 'Login code created. Add ZEPTO_MAIL_TOKEN and LOGIN_EMAIL_FROM to send email.' };
+  }
+
+  const res = await fetch('https://api.zeptomail.com.au/v1.1/email', {
+    method: 'POST',
+    headers: {
+      Authorization: `Zoho-enczapikey ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: { address: from, name: 'Moto & Co Couriers' },
+      to: [{ email_address: { address: email } }],
+      subject: 'Your Moto & Co login code',
+      htmlbody: `<p>Your Moto & Co login code is <strong>${code}</strong>.</p><p>This code expires in 10 minutes.</p>`,
+      textbody: `Your Moto & Co login code is ${code}. This code expires in 10 minutes.`,
+    }),
+  });
+
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Could not send login email: ${text}`);
+  return { sent: true, mode: 'email' };
+}
+
+async function requestLoginCode({ role, email }) {
+  const cleanEmail = normaliseEmail(email);
+  if (!cleanEmail) return { success: false, message: 'Enter your email address.' };
+
+  const store = readStore();
+  let user = role === 'client'
+    ? store.clients.find(client => normaliseEmail(client.email) === cleanEmail)
+    : store.users.find(item => item.role === role && normaliseEmail(item.email) === cleanEmail);
+
+  if (!user && role === 'client') {
+    user = await zohoCRMClientByEmail(cleanEmail);
+  }
+
+  if (!user) return { success: false, message: 'No matching account found.' };
+
+  const code = makeLoginCode();
+  loginCodes.set(`${role}:${cleanEmail}`, {
+    code,
+    user,
+    expiresAt: Date.now() + 10 * 60 * 1000,
+    used: false,
+  });
+
+  const delivery = await sendLoginCodeEmail(cleanEmail, code);
+  return { success: true, email: cleanEmail, ...delivery };
+}
+
+async function verifyLoginCode({ role, email, code }) {
+  const cleanEmail = normaliseEmail(email);
+  const key = `${role}:${cleanEmail}`;
+  const record = loginCodes.get(key);
+
+  if (!record || record.used || record.expiresAt < Date.now()) {
+    loginCodes.delete(key);
+    return { success: false, message: 'That login code has expired. Request a new code.' };
+  }
+
+  if (String(code || '').trim() !== record.code) {
+    return { success: false, message: 'That login code is not correct.' };
+  }
+
+  record.used = true;
+  loginCodes.delete(key);
+
+  if (role === 'client') {
+    const store = readStore();
+    writeStore({
+      ...store,
+      clients: [
+        ...store.clients.filter(client => normaliseEmail(client.email) !== cleanEmail),
+        record.user,
+      ],
+    });
+  }
+
+  return { success: true, user: publicUser(record.user) };
 }
 
 const server = createServer(async (req, res) => {
@@ -283,9 +443,31 @@ const server = createServer(async (req, res) => {
       const { role, email } = await readJSON(req);
       const store = readStore();
       const pool = role === 'client' ? store.clients : store.users;
-      const user = pool.find(item => item.role === role && item.email?.toLowerCase() === String(email).toLowerCase());
+      let user = pool.find(item => item.role === role && item.email?.toLowerCase() === String(email).toLowerCase());
+      if (!user && role === 'client') {
+        user = await zohoCRMClientByEmail(email);
+        if (user) {
+          writeStore({
+            ...store,
+            clients: [
+              ...store.clients.filter(client => client.email?.toLowerCase() !== user.email?.toLowerCase()),
+              user,
+            ],
+          });
+        }
+      }
       if (!user) return send(res, 401, { message: 'No matching account found.' });
       return send(res, 200, { user: publicUser(user) });
+    }
+
+    if (req.method === 'POST' && path === '/auth/request-code') {
+      const result = await requestLoginCode(await readJSON(req));
+      return send(res, result.success ? 200 : 401, result);
+    }
+
+    if (req.method === 'POST' && path === '/auth/verify-code') {
+      const result = await verifyLoginCode(await readJSON(req));
+      return send(res, result.success ? 200 : 401, result);
     }
 
     if (req.method === 'POST' && path === '/zoho/crm/client') {
@@ -295,6 +477,13 @@ const server = createServer(async (req, res) => {
 
     if (req.method === 'GET' && path === '/zoho/crm/contacts') {
       return send(res, 200, { contacts: await zohoCRMContacts() });
+    }
+
+    if (req.method === 'GET' && path === '/zoho/crm/test') {
+      const token = await accessTokenFor('CRM');
+      if (!token) return send(res, 500, { ok: false, message: 'No CRM token available. Check ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, and ZOHO_CRM_REFRESH_TOKEN.' });
+      const contacts = await zohoCRMContacts();
+      return send(res, 200, { ok: true, mode: 'live', contactCount: contacts.length });
     }
 
     if (req.method === 'POST' && path === '/zoho/books/invoice') {

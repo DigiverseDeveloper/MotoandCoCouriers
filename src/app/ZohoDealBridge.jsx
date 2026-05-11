@@ -3,11 +3,13 @@ import { useEffect, useRef } from "react";
 const API_BASE = (import.meta.env.VITE_MOTOCO_API_BASE_URL || "/api/live").replace(/\/$/, "");
 
 const STAGE_BY_STATUS = {
+  "Order Placed": "ORDER_PLACED",
   Pending: "ORDER_PLACED",
   "Picked Up": "PICKED_UP",
   "In Transit": "IN_TRANSIT",
   Delivered: "DELIVERED",
   Invoiced: "INVOICED",
+  "Paid - future use": "PAID",
 };
 
 function isSnapshot(url, method) {

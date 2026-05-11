@@ -32,6 +32,28 @@ const ADDITIONAL_PRICING = [
   { label:"Oversized/Bulk Items",   price:null,  note:"By approval only" },
 ];
 
+const ORDER_STATUSES = ["Order Placed", "Picked Up", "In Transit", "Delivered", "Invoiced", "Paid - future use"];
+
+function orderStatus(status) {
+  if (status === "Pending") return "Order Placed";
+  return ORDER_STATUSES.includes(status) ? status : "Order Placed";
+}
+
+function isStatus(status, expected) {
+  return orderStatus(status) === expected;
+}
+
+function isOneOfStatuses(status, expected) {
+  return expected.includes(orderStatus(status));
+}
+
+function statusBadgeClass(status) {
+  const current = orderStatus(status);
+  if (["Delivered", "Invoiced", "Paid - future use"].includes(current)) return "bd";
+  if (["Picked Up", "In Transit"].includes(current)) return "bt";
+  return "bp";
+}
+
 // Calculate tyre price from total count
 function calcTyrePrice(qty) {
   if (!qty || qty < 1) return 0;
@@ -89,8 +111,9 @@ async function apiJSON(path, options = {}) {
   return body;
 }
 
-async function loadLiveStore() {
-  const data = await apiJSON("/workspace");
+async function loadLiveStore(viewer) {
+  const qs = viewer?.email ? `?role=${encodeURIComponent(viewer.role || "")}&email=${encodeURIComponent(viewer.email)}` : "";
+  const data = await apiJSON(`/workspace${qs}`);
   liveStore = data.store || initStore();
   notifyStore();
   return cloneStore(liveStore);
@@ -122,6 +145,24 @@ async function zohoCRMSync(client) {
   try {
     const r = await apiJSON("/zoho/crm/client", { method:"POST", body:JSON.stringify({ client }) });
     return { ok:true, text:JSON.stringify(r) };
+  } catch(e) { return { ok:false, text:"", error:e.message }; }
+}
+
+async function zohoCRMDealCreate(order) {
+  try {
+    const r = await apiJSON("/zoho/crm/deal", { method:"POST", body:JSON.stringify({ order }) });
+    return { ok:true, data:r, text:JSON.stringify(r) };
+  } catch(e) { return { ok:false, text:"", error:e.message }; }
+}
+
+async function zohoCRMDealStage(order, stageKey, amount) {
+  if (!order?.zohoDealId) return { ok:true, skipped:true };
+  try {
+    const r = await apiJSON("/zoho/crm/deal/stage", {
+      method:"PUT",
+      body:JSON.stringify({ dealId:order.zohoDealId, stageKey, amount }),
+    });
+    return { ok:true, data:r, text:JSON.stringify(r) };
   } catch(e) { return { ok:false, text:"", error:e.message }; }
 }
 
@@ -538,24 +579,35 @@ function AuthScreen({ onLogin }) {
 }
 
 function LoginForm({ role, onLogin, onSwitch }) {
-  const [email,setEmail]=useState(""); const [err,setErr]=useState(""); const [busy,setBusy]=useState(false);
+  const [email,setEmail]=useState(""); const [code,setCode]=useState(""); const [step,setStep]=useState("email");
+  const [err,setErr]=useState(""); const [msg,setMsg]=useState(""); const [busy,setBusy]=useState(false);
   const submit=async()=>{
     setBusy(true); setErr("");
     try {
-      const r = await apiJSON("/auth/login", { method:"POST", body:JSON.stringify({ role, email }) });
-      await loadLiveStore();
+      if (step === "email") {
+        const r = await apiJSON("/auth/request-code", { method:"POST", body:JSON.stringify({ role, email }) });
+        setStep("code");
+        setMsg(r.sent ? `We emailed a login code to ${r.email}.` : "Login code created. Ask the site owner to finish email setup.");
+        setBusy(false);
+        return;
+      }
+      const r = await apiJSON("/auth/verify-code", { method:"POST", body:JSON.stringify({ role, email, code }) });
+      await loadLiveStore(r.user);
       onLogin(r.user);
     } catch(e) {
-      setErr(e.message || "No matching account found.");
+      setErr(e.message || "Login failed.");
     }
     setBusy(false);
   };
   return (
     <div>
       {err&&<div className="al al-err">{err}</div>}
-      <div className="f"><label>Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@workshop.com.au"/></div>
-      <button className="btn b-red" onClick={submit} disabled={busy}>{busy?<><span className="spin"/>Signing in...</>:"Login"}</button>
-      <div className="al al-info" style={{fontSize:".76rem",marginTop:".8rem"}}>Live build note: authentication is routed through the server. Connect Zoho or portal auth before public launch.</div>
+      {msg&&<div className="al al-info">{msg}</div>}
+      <div className="f"><label>Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} disabled={step==="code"} placeholder="you@workshop.com.au"/></div>
+      {step==="code"&&<div className="f"><label>Login Code</label><input value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,"").slice(0,6))} placeholder="6 digit code" inputMode="numeric" autoFocus/></div>}
+      <button className="btn b-red" onClick={submit} disabled={busy}>{busy?<><span className="spin"/>Please wait...</>:step==="code"?"Verify Code":"Email Login Code"}</button>
+      {step==="code"&&<button className="btn b-cream" style={{marginTop:".5rem"}} onClick={()=>{setStep("email");setCode("");setMsg("");setErr("");}} disabled={busy}>Use a different email</button>}
+      <div className="al al-info" style={{fontSize:".76rem",marginTop:".8rem"}}>For security, we email a one-time code before signing you in.</div>
       {role==="client"&&onSwitch&&<p style={{textAlign:"center",marginTop:".9rem",fontFamily:"'Barlow Condensed',sans-serif",fontSize:".82rem",color:"var(--mu)",textTransform:"uppercase",letterSpacing:".5px"}}>No account? <button onClick={onSwitch} style={{background:"none",border:"none",color:"var(--red)",cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",fontSize:".82rem",fontWeight:700,textDecoration:"underline",textTransform:"uppercase"}}>Register</button></p>}
     </div>
   );
@@ -681,9 +733,16 @@ function RegisterForm({ onLogin, onSwitch }) {
     setBusy(true);
     const client={...f,id:`c_${Date.now()}`,role:"client",createdAt:new Date().toISOString()};
     mut(g=>g.clients.push(client));
-    setZMsg("Syncing to Zoho CRM…");
-    await zohoCRMSync(client);
-    setZMsg("✓ Synced to Zoho CRM");
+    setZMsg("Syncing to Zoho CRM...");
+    const sync = await zohoCRMSync(client);
+    const parsed = parseJSON(sync.text);
+    if (!sync.ok || parsed?.success === false || parsed?.mode !== "live") {
+      setZMsg("");
+      setErr(parsed?.message || sync.error || "Saved locally, but Zoho CRM did not confirm the sync.");
+      setBusy(false);
+      return;
+    }
+    setZMsg("Synced to Zoho CRM");
     setBusy(false); setTimeout(()=>onLogin(client),900);
   };
   return (
@@ -725,7 +784,7 @@ function RegisterForm({ onLogin, onSwitch }) {
 
 function ClientDash({ user, setTab }) {
   const s=gs(); const mine=s.orders.filter(o=>o.clientId===user.id);
-  const asap=mine.filter(o=>o.urgency==="asap"&&o.status==="Pending").length;
+  const asap=mine.filter(o=>o.urgency==="asap"&&isStatus(o.status,"Order Placed")).length;
   return (
     <div>
       <div className="sh">
@@ -742,9 +801,9 @@ function ClientDash({ user, setTab }) {
       </div>
       <div className="stats">
         <div className="stat"><div className="sn" style={{color:"var(--red)"}}>{mine.length}</div><div className="sl">Total Orders</div></div>
-        <div className="stat"><div className="sn" style={{color:"var(--red)"}}>{mine.filter(o=>o.status==="Pending").length}</div><div className="sl">Pending</div></div>
-        <div className="stat"><div className="sn" style={{color:"var(--warn)"}}>{mine.filter(o=>o.status==="In Transit").length}</div><div className="sl">In Transit</div></div>
-        <div className="stat"><div className="sn" style={{color:"var(--ok)"}}>{mine.filter(o=>o.status==="Delivered").length}</div><div className="sl">Delivered</div></div>
+        <div className="stat"><div className="sn" style={{color:"var(--red)"}}>{mine.filter(o=>isStatus(o.status,"Order Placed")).length}</div><div className="sl">Order Placed</div></div>
+        <div className="stat"><div className="sn" style={{color:"var(--warn)"}}>{mine.filter(o=>isOneOfStatuses(o.status,["Picked Up","In Transit"])).length}</div><div className="sl">On Run</div></div>
+        <div className="stat"><div className="sn" style={{color:"var(--ok)"}}>{mine.filter(o=>isOneOfStatuses(o.status,["Delivered","Invoiced","Paid - future use"])).length}</div><div className="sl">Completed</div></div>
       </div>
       {asap>0&&<div className="al al-err" style={{display:"flex",alignItems:"center",gap:".5rem"}}>🔴 You have <strong>{asap} ASAP order{asap>1?"s":""}</strong> awaiting pickup.</div>}
       <div className="card">
@@ -782,7 +841,14 @@ function NewOrder({ user, setTab }) {
     setBusy(true);
     const order={...f,dropLocation:dropAddr,id:`o_${Date.now()}`,clientId:user.id,clientName:user.name,
       businessName:user.businessName,clientEmail:user.email,clientPhone:user.phone||"",
-      status:"Pending",submittedAt:new Date().toISOString()};
+      status:"Order Placed",submittedAt:new Date().toISOString()};
+    const dealSync = await zohoCRMDealCreate(order);
+    if (dealSync.ok && dealSync.data?.dealId) {
+      order.zohoDealId = dealSync.data.dealId;
+      order.zohoDealStage = dealSync.data.stage;
+      order.zohoDealPipeline = dealSync.data.pipeline;
+    }
+    if (!dealSync.ok) order.zohoDealError = dealSync.error;
     mut(g=>g.orders.push(order));
     setOk(true); setBusy(false);
     setTimeout(()=>setTab("orders"),1400);
@@ -948,10 +1014,22 @@ function DriverRun({ user, setTab }) {
   const [allOrders,setAll]=useState([]);
   const [vendorF,setVendorF]=useState("");
   const [clientF,setClientF]=useState("");
-  const refresh=()=>setAll(gs().orders.filter(o=>o.status==="Pending"||o.status==="In Transit"));
+  const refresh=()=>setAll(gs().orders.filter(o=>isOneOfStatuses(o.status,["Order Placed","Picked Up","In Transit"])));
   useEffect(refresh,[]);
 
-  const confirmPickup=(id)=>{mut(g=>{const o=g.orders.find(x=>x.id===id);if(o)o.status="In Transit";});refresh();};
+  const confirmPickup=async(id)=>{
+    let pickedOrder=null;
+    mut(g=>{const o=g.orders.find(x=>x.id===id);if(o){o.status="Picked Up";pickedOrder={...o};}});
+    await zohoCRMDealStage(pickedOrder,"PICKED_UP");
+    refresh();
+  };
+
+  const startTransit=async(id)=>{
+    let transitOrder=null;
+    mut(g=>{const o=g.orders.find(x=>x.id===id);if(o){o.status="In Transit";transitOrder={...o};}});
+    await zohoCRMDealStage(transitOrder,"IN_TRANSIT");
+    refresh();
+  };
 
   const filtered=allOrders.filter(o=>{
     if(vendorF&&o.vendor!==vendorF) return false;
@@ -959,9 +1037,10 @@ function DriverRun({ user, setTab }) {
     return true;
   });
 
-  const pending=filtered.filter(o=>o.status==="Pending");
-  const inTransit=filtered.filter(o=>o.status==="In Transit");
-  const asapCount=allOrders.filter(o=>o.urgency==="asap"&&o.status==="Pending").length;
+  const pending=filtered.filter(o=>isStatus(o.status,"Order Placed"));
+  const pickedUp=filtered.filter(o=>isStatus(o.status,"Picked Up"));
+  const inTransit=filtered.filter(o=>isStatus(o.status,"In Transit"));
+  const asapCount=allOrders.filter(o=>o.urgency==="asap"&&isStatus(o.status,"Order Placed")).length;
   const today=new Date().toLocaleDateString("en-AU",{weekday:"long",day:"numeric",month:"long"});
 
   return (
@@ -969,8 +1048,8 @@ function DriverRun({ user, setTab }) {
       <div className="sh">
         <div><div className="sh-t">Today's <span>Run</span></div><div className="sh-d">{today} · {user.name} · Brisbane pickups → Gold Coast drops</div></div>
         <div style={{display:"flex",gap:"7px"}}>
-          <div className="stat" style={{padding:".5rem .9rem",margin:0}}><div className="sn" style={{fontSize:"1.4rem",color:"var(--red)"}}>{allOrders.filter(o=>o.status==="Pending").length}</div><div className="sl">Pickup</div></div>
-          <div className="stat" style={{padding:".5rem .9rem",margin:0}}><div className="sn" style={{fontSize:"1.4rem",color:"var(--warn)"}}>{allOrders.filter(o=>o.status==="In Transit").length}</div><div className="sl">En Route</div></div>
+          <div className="stat" style={{padding:".5rem .9rem",margin:0}}><div className="sn" style={{fontSize:"1.4rem",color:"var(--red)"}}>{allOrders.filter(o=>isStatus(o.status,"Order Placed")).length}</div><div className="sl">Pickup</div></div>
+          <div className="stat" style={{padding:".5rem .9rem",margin:0}}><div className="sn" style={{fontSize:"1.4rem",color:"var(--warn)"}}>{allOrders.filter(o=>isOneOfStatuses(o.status,["Picked Up","In Transit"])).length}</div><div className="sl">On Run</div></div>
         </div>
       </div>
 
@@ -990,20 +1069,27 @@ function DriverRun({ user, setTab }) {
 
       {pending.length>0&&<div>
         <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:".75rem",fontWeight:800,letterSpacing:"2px",textTransform:"uppercase",color:"var(--red)",marginBottom:".55rem"}}>📍 Brisbane Pickups ({pending.length})</div>
-        {pending.map(o=><RunCard key={o.id} o={o} picked={false} onPickup={()=>confirmPickup(o.id)} onSignoff={()=>setTab("signoff")}/>)}
+        {pending.map(o=><RunCard key={o.id} o={o} onPickup={()=>confirmPickup(o.id)} onTransit={()=>startTransit(o.id)} onSignoff={()=>setTab("signoff")}/>)}
+      </div>}
+
+      {pickedUp.length>0&&<div style={{marginTop:"1.2rem"}}>
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:".75rem",fontWeight:800,letterSpacing:"2px",textTransform:"uppercase",color:"var(--warn)",marginBottom:".55rem"}}>Picked Up - Ready To Move ({pickedUp.length})</div>
+        {pickedUp.map(o=><RunCard key={o.id} o={o} onTransit={()=>startTransit(o.id)} onSignoff={()=>setTab("signoff")}/>)}
       </div>}
 
       {inTransit.length>0&&<div style={{marginTop:"1.2rem"}}>
         <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:".75rem",fontWeight:800,letterSpacing:"2px",textTransform:"uppercase",color:"var(--ok)",marginBottom:".55rem"}}>🚐 En Route — Gold Coast ({inTransit.length})</div>
-        {inTransit.map(o=><RunCard key={o.id} o={o} picked={true} onSignoff={()=>setTab("signoff")}/>)}
+        {inTransit.map(o=><RunCard key={o.id} o={o} onSignoff={()=>setTab("signoff")}/>)}
       </div>}
     </div>
   );
 }
 
-function RunCard({ o, picked, onPickup, onSignoff }) {
+function RunCard({ o, onPickup, onTransit, onSignoff }) {
   const v=VENDORS[o.vendor];
   const isAsap=o.urgency==="asap";
+  const currentStatus=orderStatus(o.status);
+  const picked=currentStatus!=="Order Placed";
   const submittedAt=o.submittedAt?new Date(o.submittedAt).toLocaleString("en-AU",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}):"";
   return (
     <div className={`runcard${picked?" picked":""}`} style={{borderLeftColor:isAsap&&!picked?"var(--red)":picked?"var(--ok)":"var(--b2)"}}>
@@ -1017,7 +1103,7 @@ function RunCard({ o, picked, onPickup, onSignoff }) {
             {submittedAt&&<span>Submitted {submittedAt}</span>}
           </div>
         </div>
-        <span className={`bdg ${picked?"bd":"bp"}`}>{picked?"En Route":"Pending"}</span>
+        <span className={`bdg ${statusBadgeClass(currentStatus)}`}>{currentStatus}</span>
       </div>
       {!picked&&<div className="rc-body" style={{marginBottom:".4rem"}}>🏭 <strong>Pickup:</strong> {v?.address||"—"} · <a href={`tel:${v?.phone}`} style={{color:"var(--red)",textDecoration:"none"}}>{v?.phone}</a></div>}
       <div className="rc-addr">
@@ -1028,8 +1114,9 @@ function RunCard({ o, picked, onPickup, onSignoff }) {
       </div>
       {o.notes&&<div className="rc-body" style={{marginTop:".3rem"}}>📝 <strong>Notes:</strong> {o.notes}</div>}
       <div style={{display:"flex",gap:"7px",marginTop:".8rem"}}>
-        {!picked&&<button className="btn b-red b-sm" onClick={onPickup}>✓ Confirm Pickup</button>}
-        {picked&&<button className="btn b-ok b-sm" onClick={onSignoff}>→ Sign Off Delivery</button>}
+        {currentStatus==="Order Placed"&&<button className="btn b-red b-sm" onClick={onPickup}>Confirm Pickup</button>}
+        {currentStatus==="Picked Up"&&<button className="btn b-red b-sm" onClick={onTransit}>Start Transit</button>}
+        {currentStatus==="In Transit"&&<button className="btn b-ok b-sm" onClick={onSignoff}>Sign Off Delivery</button>}
       </div>
     </div>
   );
@@ -1045,7 +1132,7 @@ function DriverSignoff({ user }) {
   const [done,setDone]=useState(false); const [err,setErr]=useState(""); const [busy,setBusy]=useState(false);
   const canvasRef=useRef(null); const drawing=useRef(false); const hasSig=useRef(false);
 
-  useEffect(()=>setOrders(gs().orders.filter(o=>o.status==="In Transit")),[]);
+  useEffect(()=>setOrders(gs().orders.filter(o=>isStatus(o.status,"In Transit"))),[]);
 
   const selectOrder=(o)=>{setSel(o);setTyreQty(0);setPartQtys({});setReturnsQty(0);setErr("");setRecvName("");setRecvPhone("");hasSig.current=false;if(canvasRef.current){const c=canvasRef.current;const ctx=c.getContext("2d");ctx.clearRect(0,0,c.width,c.height);}};
 
@@ -1085,9 +1172,11 @@ function DriverSignoff({ user }) {
       tyreQty,tyrePrice,partQtys,partsTotal,returnsQty,returnsTotal,
       totalPrice:grandTotal,itemsDesc:itemParts.join("; "),
       driverName:user.name,signatureData:sig,
+      zohoDealId:sel.zohoDealId,
       completedAt:new Date().toISOString(),
     };
     mut(g=>{g.deliveries.push(delivery);const o=g.orders.find(x=>x.id===sel.id);if(o){o.status="Delivered";o.price=grandTotal;}});
+    await zohoCRMDealStage({...sel, zohoDealId:sel.zohoDealId},"DELIVERED",grandTotal);
     setOrders(prev=>prev.filter(x=>x.id!==sel.id));
     setSel(null);setTyreQty(0);setPartQtys({});setReturnsQty(0);setRecvName("");setRecvPhone("");clearSig();
     setErr("");setBusy(false);setDone(true);setTimeout(()=>setDone(false),3000);
@@ -1256,7 +1345,7 @@ function AdminDash() {
       <div className="sh"><div><div className="sh-t">Admin <span>Overview</span></div><div className="sh-d">moto&amp;co couriers · Super Admin</div></div></div>
       <div className="stats">
         <div className="stat"><div className="sn" style={{color:"var(--red)"}}>{s.clients.length}</div><div className="sl">Clients</div></div>
-        <div className="stat"><div className="sn" style={{color:"var(--red)"}}>{s.orders.filter(o=>o.status==="Pending").length}</div><div className="sl">Pending</div></div>
+        <div className="stat"><div className="sn" style={{color:"var(--red)"}}>{s.orders.filter(o=>isStatus(o.status,"Order Placed")).length}</div><div className="sl">Order Placed</div></div>
         <div className="stat"><div className="sn" style={{color:"var(--warn)"}}>{s.deliveries.length}</div><div className="sl">Deliveries</div></div>
         <div className="stat"><div className="sn" style={{color:"var(--ok)"}}>${rev.toFixed(0)}</div><div className="sl">This Month</div></div>
       </div>
@@ -1297,6 +1386,7 @@ function AdminClients() {
     const r=await zohoBooksInvoice(sel,clientDeliveries,mLbl);
     setBusy(false);
     const p=parseJSON(r.text);
+    if(r.ok&&p?.success) await Promise.all(clientDeliveries.map(d=>zohoCRMDealStage({zohoDealId:d.zohoDealId},"INVOICED",d.totalPrice)));
     if(r.ok&&p?.success) setInvRes({ok:true,msg:`✓ Invoice ${p.invoiceNumber||""} created in Zoho Books — sent to ${sel.email}`});
     else setInvRes({ok:false,msg:"Zoho Books error: "+(p?.message||r.error||"Unknown")});
   };
@@ -1375,13 +1465,13 @@ function AdminClients() {
 function AdminOrders() {
   const [filter,setFilter]=useState("all");
   const s=gs();
-  const orders=[...s.orders].reverse().filter(o=>filter==="all"||o.status===filter||(filter==="asap"&&o.urgency==="asap"));
+  const orders=[...s.orders].reverse().filter(o=>filter==="all"||isStatus(o.status,filter)||(filter==="asap"&&o.urgency==="asap"));
   return (
     <div>
       <div className="sh">
         <div><div className="sh-t">All <span>Orders</span></div><div className="sh-d">{s.orders.length} total across all clients</div></div>
         <div style={{display:"flex",gap:"5px",flexWrap:"wrap"}}>
-          {[["all","All"],["asap","🔴 ASAP"],["Pending","Pending"],["In Transit","In Transit"],["Delivered","Delivered"]].map(([v,l])=>(
+          {[["all","All"],["asap","ASAP"],["Order Placed","Order Placed"],["Picked Up","Picked Up"],["In Transit","In Transit"],["Delivered","Delivered"],["Invoiced","Invoiced"],["Paid - future use","Paid"]].map(([v,l])=>(
             <button key={v} className={`mb${filter===v?" on":""}`} onClick={()=>setFilter(v)}>{l}</button>
           ))}
         </div>
@@ -1422,7 +1512,8 @@ function ZohoSync() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function ORow({ o, showClient }) {
-  const sc=o.status==="Delivered"?"bd":o.status==="In Transit"?"bt":"bp";
+  const currentStatus=orderStatus(o.status);
+  const sc=statusBadgeClass(currentStatus);
   const dt=o.submittedAt?new Date(o.submittedAt).toLocaleString("en-AU",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}):new Date(o.id.replace("o_","")>>0).toLocaleDateString("en-AU");
   const cols=showClient?"60px 1fr 1fr auto auto":"60px 1fr auto auto";
   return (
@@ -1430,7 +1521,7 @@ function ORow({ o, showClient }) {
       <div className="onum">#{o.id.slice(-4)}</div>
       <div className="oi"><strong>{o.vendor} — {o.conNote}</strong><span>📦 {o.dropLocation||"Gold Coast"}{o.price>0?` · $${o.price.toFixed(2)} ex GST`:""}</span></div>
       {showClient&&<div className="oi"><strong>{o.businessName}</strong><span>{o.clientEmail}</span></div>}
-      <div>{o.urgency==="asap"&&<span className="tag tag-asap">ASAP</span>}<span className={`bdg ${sc}`} style={{marginLeft:o.urgency==="asap"?4:0}}>{o.status}</span></div>
+      <div>{o.urgency==="asap"&&<span className="tag tag-asap">ASAP</span>}<span className={`bdg ${sc}`} style={{marginLeft:o.urgency==="asap"?4:0}}>{currentStatus}</span></div>
       <div className="od">{dt}</div>
     </div>
   );

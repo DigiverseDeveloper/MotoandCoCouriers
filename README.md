@@ -30,6 +30,10 @@ To connect real Zoho data, copy `.env.example` to `.env` and add the Zoho values
 
 - `ZOHO_CRM_ACCESS_TOKEN`
 - `ZOHO_BOOKS_ACCESS_TOKEN`
+- `ZOHO_CLIENT_ID`
+- `ZOHO_CLIENT_SECRET`
+- `ZOHO_CRM_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
+- `ZOHO_BOOKS_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
 - `ZOHO_BOOKS_ORGANIZATION_ID`
 - `ZOHO_BOOKS_SERVICE_ITEM_ID`
 - `ZOHO_BOOKS_GST_TAX_ID` if GST should be applied by Zoho Books
@@ -91,15 +95,22 @@ Add the Zoho credentials in Netlify:
 Use these names:
 
 - `ZOHO_API_DOMAIN=https://www.zohoapis.com.au`
+- `ZOHO_ACCOUNTS_URL=https://accounts.zoho.com.au`
 - `ZOHO_CRM_VERSION=v8`
-- `ZOHO_CRM_ACCESS_TOKEN`
-- `ZOHO_BOOKS_ACCESS_TOKEN`
+- `ZOHO_CLIENT_ID`
+- `ZOHO_CLIENT_SECRET`
+- `ZOHO_CRM_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
+- `ZOHO_BOOKS_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
 - `ZOHO_BOOKS_ORGANIZATION_ID`
 - `ZOHO_BOOKS_SERVICE_ITEM_ID`
 - `ZOHO_BOOKS_GST_TAX_ID` if GST should be applied by Zoho Books
 - `ZOHO_BOOKS_FALLBACK_CUSTOMER_ID` only for testing invoices before each client has a Books customer id
+- `LOGIN_EMAIL_FROM` for sending login codes
+- `ZEPTO_MAIL_TOKEN` for Zoho ZeptoMail login-code email
 
 Netlify Functions can keep secrets private, but they are not a long-term database. For a real public launch, orders and delivery sign-offs should be saved into Zoho Creator or Zoho CRM custom modules, not only the function fallback memory.
+
+Client login uses a one-time 6-digit email code. The code expires after 10 minutes and is only sent to a client email that exists in Zoho CRM. Add `LOGIN_EMAIL_FROM` and `ZEPTO_MAIL_TOKEN` in Netlify before relying on this in production.
 
 ## How This Should Be Added To Zoho
 
