@@ -41,10 +41,8 @@ export default function ZohoDealBridge({ children }) {
   useEffect(() => {
     const originalFetch = window.fetch.bind(window);
 
-    async function pullZohoOrdersFor(user) {
-      if (!user?.email) return [];
-      const qs = new URLSearchParams({ role: user.role || "", email: user.email });
-      const response = await originalFetch(`/.netlify/functions/deals-workspace?${qs.toString()}`);
+    async function pullZohoOrders() {
+      const response = await originalFetch("/.netlify/functions/deals-workspace");
       if (!response.ok) return [];
       const body = await response.json().catch(() => ({}));
       return Array.isArray(body.orders) ? body.orders : [];
@@ -161,7 +159,7 @@ export default function ZohoDealBridge({ children }) {
         const clone = response.clone();
         const body = await clone.json().catch(() => ({}));
         if (body.store) {
-          const zohoOrders = await pullZohoOrdersFor(lastUserRef.current).catch(error => {
+          const zohoOrders = await pullZohoOrders().catch(error => {
             console.error(error);
             return [];
           });
