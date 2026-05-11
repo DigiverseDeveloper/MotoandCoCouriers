@@ -15,6 +15,7 @@
   - Driver/admin updates push stage changes back to Zoho.
   - Admin/driver workspace sees the full live Couriers pipeline while customers see only their own deals.
 - Test Zoho Books invoice creation after Books variables are configured and login testing can proceed.
+- Confirm invoices bill the Zoho Books Customer linked to the CRM Account/business, with the contact email used only as recipient/contact information.
 
 ## Built Locally - Needs Live Retest
 
@@ -28,8 +29,11 @@
 - Tighten customer view so customers only see their own pickup requests.
 - Tighten admin/driver views around the live deal pipeline.
 - Prepare Zoho Books invoice flow and required Books environment variables.
+- Route invoice billing to the CRM Account/business instead of the individual contact person.
 - Check the live deploy after ZeptoMail is approved and login testing can proceed.
 
 ## Next Build Work
 
-- Map CRM clients to Zoho Books customer ids so invoices do not need the temporary fallback customer.
+- Configure the Zoho Books variables in Netlify.
+- Decide whether `ZOHO_BOOKS_CREATE_CUSTOMERS=true` should be enabled, or whether Books customers should be created/matched manually first.
+- Add a persistent CRM Account -> Zoho Books Customer id field when ready, so invoices do not need the temporary fallback customer.
