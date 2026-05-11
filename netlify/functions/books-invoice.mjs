@@ -24,6 +24,14 @@ function parseBody(event) {
   return JSON.parse(event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body);
 }
 
+function normalise(value) {
+  return String(value || '').trim();
+}
+
+function normaliseEmail(email) {
+  return normalise(email).toLowerCase();
+}
+
 async function accessTokenForBooks() {
   const directToken = process.env.ZOHO_BOOKS_ACCESS_TOKEN;
   const refreshToken = process.env.ZOHO_BOOKS_REFRESH_TOKEN || process.env.ZOHO_REFRESH_TOKEN;
@@ -57,14 +65,14 @@ async function accessTokenForBooks() {
   return data.access_token;
 }
 
-async function zohoBooksRequest({ path, token, body }) {
+async function zohoBooksRequest({ path, token, method = 'GET', body }) {
   const res = await fetch(`${zohoApiDomain}${path}`, {
-    method: 'POST',
-    headers: {
+    method,
+    headers: compact({
       Authorization: `Zoho-oauthtoken ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
+      'Content-Type': body ? 'application/json' : undefined,
+    }),
+    body: body ? JSON.stringify(body) : undefined,
   });
 
   const text = await res.text();
@@ -76,11 +84,80 @@ async function zohoBooksRequest({ path, token, body }) {
   return data;
 }
 
+function accountNameForClient(client = {}) {
+  return normalise(client.zohoAccountName || client.businessName || client.accountName || client.companyName);
+}
+
+function billingEmailForClient(client = {}) {
+  return normaliseEmail(client.billingEmail || client.email || client.contactEmail);
+}
+
+async function findBooksCustomer({ token, organisationId, accountName, email }) {
+  const searchText = accountName || email;
+  if (!searchText) return null;
+
+  const data = await zohoBooksRequest({
+    token,
+    path: `/books/v3/contacts?organization_id=${encodeURIComponent(organisationId)}&search_text=${encodeURIComponent(searchText)}`,
+  });
+
+  const contacts = data.contacts || [];
+  return contacts.find(contact =>
+    normalise(contact.contact_name).toLowerCase() === normalise(accountName).toLowerCase() ||
+    normaliseEmail(contact.email) === email
+  ) || contacts[0] || null;
+}
+
+async function createBooksCustomer({ token, organisationId, client, accountName, email }) {
+  if (!accountName) return null;
+
+  const data = await zohoBooksRequest({
+    token,
+    method: 'POST',
+    path: `/books/v3/contacts?organization_id=${encodeURIComponent(organisationId)}`,
+    body: compact({
+      contact_name: accountName,
+      company_name: accountName,
+      contact_type: 'customer',
+      billing_address: client.deliveryAddress ? { address: client.deliveryAddress } : undefined,
+      contact_persons: email ? [{
+        first_name: normalise(client.name || accountName).split(/\s+/)[0] || accountName,
+        last_name: normalise(client.name || '').split(/\s+/).slice(1).join(' ') || accountName,
+        email,
+        phone: client.phone || undefined,
+        is_primary_contact: true,
+      }] : undefined,
+    }),
+  });
+
+  return data.contact || null;
+}
+
+async function resolveBooksCustomer({ token, organisationId, client }) {
+  const explicitCustomerId = client.zohoBooksCustomerId || client.booksCustomerId;
+  if (explicitCustomerId) return { customerId: explicitCustomerId, source: 'client' };
+
+  const accountName = accountNameForClient(client);
+  const email = billingEmailForClient(client);
+  const found = await findBooksCustomer({ token, organisationId, accountName, email });
+  if (found?.contact_id) return { customerId: found.contact_id, source: 'matched-account', customerName: found.contact_name };
+
+  if (process.env.ZOHO_BOOKS_CREATE_CUSTOMERS === 'true') {
+    const created = await createBooksCustomer({ token, organisationId, client, accountName, email });
+    if (created?.contact_id) return { customerId: created.contact_id, source: 'created-account', customerName: created.contact_name };
+  }
+
+  const fallbackCustomerId = process.env.ZOHO_BOOKS_FALLBACK_CUSTOMER_ID;
+  if (fallbackCustomerId) return { customerId: fallbackCustomerId, source: 'fallback' };
+
+  return { customerId: '', source: 'missing' };
+}
+
 function missingSettings({ token, organisationId, customerId, itemId }) {
   return [
     !token && 'ZOHO_BOOKS_REFRESH_TOKEN or ZOHO_BOOKS_ACCESS_TOKEN',
     !organisationId && 'ZOHO_BOOKS_ORGANIZATION_ID',
-    !customerId && 'Zoho Books customer id on the client, or temporary ZOHO_BOOKS_FALLBACK_CUSTOMER_ID',
+    !customerId && 'Zoho Books customer for the CRM Account, or temporary ZOHO_BOOKS_FALLBACK_CUSTOMER_ID',
     !itemId && 'ZOHO_BOOKS_SERVICE_ITEM_ID',
   ].filter(Boolean);
 }
@@ -116,9 +193,9 @@ async function createInvoice(payload = {}) {
   const deliveries = Array.isArray(payload.deliveries) ? payload.deliveries : [];
   const monthLabel = payload.monthLabel || new Date().toLocaleString('en-AU', { month: 'long', year: 'numeric' });
   const organisationId = process.env.ZOHO_BOOKS_ORGANIZATION_ID;
-  const customerId = client.zohoBooksCustomerId || process.env.ZOHO_BOOKS_FALLBACK_CUSTOMER_ID;
   const itemId = process.env.ZOHO_BOOKS_SERVICE_ITEM_ID;
-  const missing = missingSettings({ token, organisationId, customerId, itemId });
+  const customer = token && organisationId ? await resolveBooksCustomer({ token, organisationId, client }) : { customerId: '', source: 'missing' };
+  const missing = missingSettings({ token, organisationId, customerId: customer.customerId, itemId });
 
   if (missing.length) {
     return {
@@ -140,21 +217,24 @@ async function createInvoice(payload = {}) {
 
   const invoice = await zohoBooksRequest({
     token,
+    method: 'POST',
     path: `/books/v3/invoices?organization_id=${encodeURIComponent(organisationId)}`,
     body: {
-      customer_id: customerId,
+      customer_id: customer.customerId,
       date: new Date().toISOString().slice(0, 10),
       line_items: lineItems,
-      notes: `Moto & Co monthly logistics invoice for ${monthLabel}. Prices are ex GST unless the configured Zoho tax code applies GST.`,
+      notes: `Moto & Co monthly logistics invoice for ${monthLabel}. Billing account: ${accountNameForClient(client) || customer.customerName || 'Zoho Books customer'}.`,
     },
   });
 
   return {
     success: true,
     mode: 'live',
+    customerId: customer.customerId,
+    customerSource: customer.source,
     invoiceNumber: invoice?.invoice?.invoice_number,
     invoiceId: invoice?.invoice?.invoice_id,
-    message: 'Invoice created in Zoho Books.',
+    message: 'Invoice created in Zoho Books for the business account.',
   };
 }
 
