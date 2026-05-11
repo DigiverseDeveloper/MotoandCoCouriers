@@ -4,6 +4,11 @@
   functions = "netlify/functions"
 
 [[redirects]]
+  from = "/api/live/workspace"
+  to = "/.netlify/functions/workspace"
+  status = 200
+
+[[redirects]]
   from = "/api/live/*"
   to = "/.netlify/functions/live/:splat"
   status = 200
