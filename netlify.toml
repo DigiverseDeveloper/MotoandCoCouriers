@@ -9,6 +9,11 @@
   status = 200
 
 [[redirects]]
+  from = "/api/live/zoho/books/invoice"
+  to = "/.netlify/functions/books-invoice"
+  status = 200
+
+[[redirects]]
   from = "/api/live/*"
   to = "/.netlify/functions/live/:splat"
   status = 200
