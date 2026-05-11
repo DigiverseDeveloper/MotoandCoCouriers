@@ -1,8 +1,11 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
 const zohoAccountsUrl = (process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho.com.au').replace(/\/$/, '');
 const zohoApiDomain = (process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com.au').replace(/\/$/, '');
 const zohoCrmVersion = process.env.ZOHO_CRM_VERSION || 'v8';
 const tokenCache = new Map();
 const staffEmails = new Set(['admin@motoandco.com.au', 'jake@motoandco.com.au']);
+const sessionCookieName = 'motoco_session';
 
 function response(statusCode, body) {
   return {
@@ -10,6 +13,46 @@ function response(statusCode, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   };
+}
+
+function sessionSecret() {
+  return process.env.SESSION_SECRET || process.env.ZOHO_CLIENT_SECRET || '';
+}
+
+function signSessionPayload(payload) {
+  const secret = sessionSecret();
+  if (!secret) return '';
+  return createHmac('sha256', secret).update(payload).digest('base64url');
+}
+
+function safeEqual(left, right) {
+  const leftBuffer = Buffer.from(String(left || ''));
+  const rightBuffer = Buffer.from(String(right || ''));
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function parseCookies(header = '') {
+  return Object.fromEntries(String(header || '').split(';').map(part => {
+    const [name, ...value] = part.trim().split('=');
+    return [name, value.join('=')];
+  }).filter(([name]) => name));
+}
+
+function sessionFromEvent(event) {
+  const cookies = parseCookies(event.headers?.cookie || event.headers?.Cookie || '');
+  const token = cookies[sessionCookieName];
+  if (!token) return null;
+
+  const [payload, signature] = token.split('.');
+  if (!payload || !signature || !safeEqual(signature, signSessionPayload(payload))) return null;
+
+  try {
+    const session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!session.exp || session.exp < Date.now()) return null;
+    return session;
+  } catch {
+    return null;
+  }
 }
 
 function compact(value) {
@@ -170,7 +213,12 @@ export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return response(204, {});
 
   try {
-    const { role, email } = event.queryStringParameters || {};
+    const session = sessionFromEvent(event);
+    if (!session) {
+      return response(200, { orders: [], mode: 'unauthenticated' });
+    }
+
+    const { role, email } = session;
     const cleanEmail = normaliseEmail(email);
     if (!cleanEmail || !['client', 'admin', 'driver'].includes(role || '')) {
       return response(200, { orders: [], mode: 'unauthenticated' });
