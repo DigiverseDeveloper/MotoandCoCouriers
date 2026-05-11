@@ -1,5 +1,7 @@
+const zohoAccountsUrl = (process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho.com.au').replace(/\/$/, '');
 const zohoApiDomain = (process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com.au').replace(/\/$/, '');
 const zohoCrmVersion = process.env.ZOHO_CRM_VERSION || 'v8';
+const tokenCache = new Map();
 
 const fallbackStore = {
   users: [
@@ -69,8 +71,42 @@ async function zohoRequest({ path, token, method = 'GET', body }) {
   return data;
 }
 
+async function accessTokenFor(service) {
+  const directToken = process.env[`ZOHO_${service}_ACCESS_TOKEN`];
+  const refreshToken = process.env[`ZOHO_${service}_REFRESH_TOKEN`] || process.env.ZOHO_REFRESH_TOKEN;
+  const clientId = process.env.ZOHO_CLIENT_ID;
+  const clientSecret = process.env.ZOHO_CLIENT_SECRET;
+
+  if (!refreshToken) return directToken;
+  if (!clientId || !clientSecret) return directToken;
+
+  const cacheKey = `${service}:${refreshToken}`;
+  const cached = tokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now() + 60000) return cached.token;
+
+  const params = new URLSearchParams({
+    refresh_token: refreshToken,
+    client_id: clientId,
+    client_secret: clientSecret,
+    grant_type: 'refresh_token',
+  });
+
+  const res = await fetch(`${zohoAccountsUrl}/oauth/v2/token?${params.toString()}`, { method: 'POST' });
+  const data = await res.json();
+  if (!res.ok || !data.access_token) {
+    throw new Error(data.error_description || data.error || 'Could not refresh Zoho access token.');
+  }
+
+  tokenCache.set(cacheKey, {
+    token: data.access_token,
+    expiresAt: Date.now() + Number(data.expires_in || 3600) * 1000,
+  });
+  return data.access_token;
+}
+
 async function zohoCRMClient(client) {
-  if (!process.env.ZOHO_CRM_ACCESS_TOKEN) {
+  const token = await accessTokenFor('CRM');
+  if (!token) {
     return {
       success: true,
       mode: 'placeholder',
@@ -79,7 +115,6 @@ async function zohoCRMClient(client) {
     };
   }
 
-  const token = process.env.ZOHO_CRM_ACCESS_TOKEN;
   const { firstName, lastName } = splitName(client.name);
   const account = await zohoRequest({
     token,
@@ -125,7 +160,8 @@ async function zohoCRMClient(client) {
 }
 
 async function zohoCRMContacts() {
-  if (!process.env.ZOHO_CRM_ACCESS_TOKEN) {
+  const token = await accessTokenFor('CRM');
+  if (!token) {
     return memoryStore.clients.map(client => ({
       id: client.id,
       name: client.name,
@@ -136,7 +172,7 @@ async function zohoCRMContacts() {
   }
 
   const result = await zohoRequest({
-    token: process.env.ZOHO_CRM_ACCESS_TOKEN,
+    token,
     path: `/crm/${zohoCrmVersion}/Contacts?fields=Full_Name,Email,Phone,Account_Name`,
   });
 
@@ -150,11 +186,12 @@ async function zohoCRMContacts() {
 }
 
 async function zohoBooksInvoice({ client, deliveries = [], monthLabel, total }) {
+  const token = await accessTokenFor('BOOKS');
   const customerId = client.zohoBooksCustomerId || process.env.ZOHO_BOOKS_FALLBACK_CUSTOMER_ID;
   const organisationId = process.env.ZOHO_BOOKS_ORGANIZATION_ID;
   const itemId = process.env.ZOHO_BOOKS_SERVICE_ITEM_ID;
   const missing = [
-    !process.env.ZOHO_BOOKS_ACCESS_TOKEN && 'ZOHO_BOOKS_ACCESS_TOKEN',
+    !token && 'ZOHO_BOOKS_REFRESH_TOKEN or ZOHO_BOOKS_ACCESS_TOKEN',
     !organisationId && 'ZOHO_BOOKS_ORGANIZATION_ID',
     !customerId && 'Zoho Books customer_id on client or ZOHO_BOOKS_FALLBACK_CUSTOMER_ID',
     !itemId && 'ZOHO_BOOKS_SERVICE_ITEM_ID',
@@ -189,7 +226,7 @@ async function zohoBooksInvoice({ client, deliveries = [], monthLabel, total }) 
   }
 
   const invoice = await zohoRequest({
-    token: process.env.ZOHO_BOOKS_ACCESS_TOKEN,
+    token,
     method: 'POST',
     path: `/books/v3/invoices?organization_id=${encodeURIComponent(organisationId)}`,
     body: {
@@ -249,6 +286,13 @@ export async function handler(event) {
 
     if (event.httpMethod === 'GET' && path === '/zoho/crm/contacts') {
       return response(200, { contacts: await zohoCRMContacts() });
+    }
+
+    if (event.httpMethod === 'GET' && path === '/zoho/crm/test') {
+      const token = await accessTokenFor('CRM');
+      if (!token) return response(500, { ok: false, message: 'No CRM token available. Check ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, and ZOHO_CRM_REFRESH_TOKEN.' });
+      const contacts = await zohoCRMContacts();
+      return response(200, { ok: true, mode: 'live', contactCount: contacts.length });
     }
 
     if (event.httpMethod === 'POST' && path === '/zoho/books/invoice') {
