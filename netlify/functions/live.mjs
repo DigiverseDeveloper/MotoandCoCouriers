@@ -2,6 +2,7 @@ const zohoAccountsUrl = (process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho
 const zohoApiDomain = (process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com.au').replace(/\/$/, '');
 const zohoCrmVersion = process.env.ZOHO_CRM_VERSION || 'v8';
 const tokenCache = new Map();
+const loginCodes = new Map();
 
 const fallbackStore = {
   users: [
@@ -43,6 +44,10 @@ function compact(value) {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null && item !== ''));
 }
 
+function normaliseEmail(email) {
+  return String(email || '').trim().toLowerCase();
+}
+
 function splitName(name = '') {
   const parts = String(name).trim().split(/\s+/).filter(Boolean);
   if (parts.length <= 1) return { firstName: '', lastName: parts[0] || 'Client' };
@@ -51,6 +56,22 @@ function splitName(name = '') {
 
 function zohoId(result) {
   return result?.data?.[0]?.details?.id;
+}
+
+function dealStage(key) {
+  const defaults = {
+    ORDER_PLACED: 'Order Placed',
+    PICKED_UP: 'Picked Up',
+    IN_TRANSIT: 'In Transit',
+    DELIVERED: 'Delivered',
+    INVOICED: 'Invoiced',
+    PAID: 'Paid - future use',
+  };
+  return process.env[`ZOHO_DEAL_STAGE_${key}`] || defaults[key] || defaults.ORDER_PLACED;
+}
+
+function dealPipeline() {
+  return process.env.ZOHO_DEAL_PIPELINE || 'Couriers';
 }
 
 async function zohoRequest({ path, token, method = 'GET', body }) {
@@ -159,6 +180,121 @@ async function zohoCRMClient(client) {
   };
 }
 
+function clientFromOrder(order = {}) {
+  const existing = memoryStore.clients.find(client =>
+    (order.clientId && client.id === order.clientId) ||
+    (order.clientEmail && normaliseEmail(client.email) === normaliseEmail(order.clientEmail))
+  );
+
+  if (existing) return existing;
+
+  return {
+    id: order.clientId,
+    role: 'client',
+    name: order.clientName || order.businessName || order.clientEmail || 'Client',
+    email: order.clientEmail,
+    phone: order.clientPhone || '',
+    businessName: order.businessName || order.clientName || order.clientEmail,
+    deliveryAddress: order.dropLocation || '',
+    vendors: order.vendor ? [order.vendor] : [],
+  };
+}
+
+function dealName(order = {}) {
+  return [
+    order.businessName || order.clientName || 'Pickup request',
+    order.conNote || order.id,
+  ].filter(Boolean).join(' - ');
+}
+
+function dealDescription(order = {}) {
+  return [
+    `Con note: ${order.conNote || 'Not supplied'}`,
+    `Supplier: ${order.vendor || 'Not supplied'}`,
+    `Priority: ${order.urgency || 'next-run'}`,
+    `Delivery address: ${order.dropLocation || 'Not supplied'}`,
+    order.notes ? `Notes: ${order.notes}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+async function zohoCRMDealForOrder(order) {
+  const token = await accessTokenFor('CRM');
+  if (!token) {
+    return {
+      success: true,
+      mode: 'placeholder',
+      message: 'Pickup request queued. Add Zoho CRM credentials to create Deals live.',
+    };
+  }
+
+  const client = clientFromOrder(order);
+  const clientSync = client.email ? await zohoCRMClient(client) : {};
+  const closingDate = new Date(order.preferredDate || order.submittedAt || Date.now()).toISOString().slice(0, 10);
+
+  const deal = await zohoRequest({
+    token,
+    method: 'POST',
+    path: `/crm/${zohoCrmVersion}/Deals`,
+    body: {
+      data: [compact({
+        Deal_Name: dealName(order),
+        Stage: dealStage('ORDER_PLACED'),
+        Pipeline: dealPipeline(),
+        Closing_Date: closingDate,
+        Amount: Number(order.price || 0) || undefined,
+        Account_Name: clientSync.accountId ? { id: clientSync.accountId } : undefined,
+        Contact_Name: clientSync.contactId ? { id: clientSync.contactId } : undefined,
+        Description: dealDescription(order),
+      })],
+    },
+  });
+
+  return {
+    success: true,
+    mode: 'live',
+    dealId: zohoId(deal),
+    stage: dealStage('ORDER_PLACED'),
+    pipeline: dealPipeline(),
+    message: 'Pickup request created as a Zoho CRM Deal.',
+  };
+}
+
+async function zohoCRMDealStage({ dealId, stageKey, stage, amount }) {
+  const token = await accessTokenFor('CRM');
+  const nextStage = stage || dealStage(stageKey || 'ORDER_PLACED');
+
+  if (!token || !dealId) {
+    return {
+      success: true,
+      mode: 'placeholder',
+      stage: nextStage,
+      message: 'Deal stage queued. Add Zoho CRM credentials and a Deal ID to update live.',
+    };
+  }
+
+  await zohoRequest({
+    token,
+    method: 'PUT',
+    path: `/crm/${zohoCrmVersion}/Deals/${encodeURIComponent(dealId)}`,
+    body: {
+      data: [compact({
+        Stage: nextStage,
+        Pipeline: dealPipeline(),
+        Amount: Number(amount || 0) || undefined,
+      })],
+    },
+  });
+
+  return {
+    success: true,
+    mode: 'live',
+    dealId,
+    stage: nextStage,
+    pipeline: dealPipeline(),
+    message: 'Zoho CRM Deal stage updated.',
+  };
+}
+
 async function zohoCRMContacts() {
   const token = await accessTokenFor('CRM');
   if (!token) {
@@ -210,6 +346,92 @@ async function zohoCRMClientByEmail(email) {
   });
   const contact = (result.data || [])[0];
   return contact ? crmContactToClient(contact) : null;
+}
+
+function makeLoginCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+async function sendLoginCodeEmail(email, code) {
+  const from = process.env.LOGIN_EMAIL_FROM || process.env.ZEPTO_FROM_EMAIL;
+  const token = process.env.ZEPTO_MAIL_TOKEN || process.env.ZEPTOMAIL_TOKEN;
+
+  if (!from || !token) {
+    console.log(`Moto & Co login code for ${email}: ${code}`);
+    return { sent: false, mode: 'console', message: 'Login code created. Add ZEPTO_MAIL_TOKEN and LOGIN_EMAIL_FROM in Netlify to send email.' };
+  }
+
+  const res = await fetch('https://api.zeptomail.com.au/v1.1/email', {
+    method: 'POST',
+    headers: {
+      Authorization: `Zoho-enczapikey ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: { address: from, name: 'Moto & Co Couriers' },
+      to: [{ email_address: { address: email } }],
+      subject: 'Your Moto & Co login code',
+      htmlbody: `<p>Your Moto & Co login code is <strong>${code}</strong>.</p><p>This code expires in 10 minutes.</p>`,
+      textbody: `Your Moto & Co login code is ${code}. This code expires in 10 minutes.`,
+    }),
+  });
+
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Could not send login email: ${text}`);
+  return { sent: true, mode: 'email' };
+}
+
+async function requestLoginCode({ role, email }) {
+  const cleanEmail = normaliseEmail(email);
+  if (!cleanEmail) return { success: false, message: 'Enter your email address.' };
+
+  let user = role === 'client'
+    ? memoryStore.clients.find(client => normaliseEmail(client.email) === cleanEmail)
+    : memoryStore.users.find(item => item.role === role && normaliseEmail(item.email) === cleanEmail);
+
+  if (!user && role === 'client') {
+    user = await zohoCRMClientByEmail(cleanEmail);
+  }
+
+  if (!user) return { success: false, message: 'No matching account found.' };
+
+  const code = makeLoginCode();
+  loginCodes.set(`${role}:${cleanEmail}`, {
+    code,
+    user,
+    expiresAt: Date.now() + 10 * 60 * 1000,
+    used: false,
+  });
+
+  const delivery = await sendLoginCodeEmail(cleanEmail, code);
+  return { success: true, email: cleanEmail, ...delivery };
+}
+
+async function verifyLoginCode({ role, email, code }) {
+  const cleanEmail = normaliseEmail(email);
+  const key = `${role}:${cleanEmail}`;
+  const record = loginCodes.get(key);
+
+  if (!record || record.used || record.expiresAt < Date.now()) {
+    loginCodes.delete(key);
+    return { success: false, message: 'That login code has expired. Request a new code.' };
+  }
+
+  if (String(code || '').trim() !== record.code) {
+    return { success: false, message: 'That login code is not correct.' };
+  }
+
+  record.used = true;
+  loginCodes.delete(key);
+
+  if (role === 'client') {
+    memoryStore.clients = [
+      ...memoryStore.clients.filter(client => normaliseEmail(client.email) !== cleanEmail),
+      record.user,
+    ];
+  }
+
+  return { success: true, user: publicUser(record.user) };
 }
 
 async function zohoBooksInvoice({ client, deliveries = [], monthLabel, total }) {
@@ -315,9 +537,28 @@ export async function handler(event) {
       return response(200, { user: publicUser(user) });
     }
 
+    if (event.httpMethod === 'POST' && path === '/auth/request-code') {
+      const result = await requestLoginCode(parseBody(event));
+      return response(result.success ? 200 : 401, result);
+    }
+
+    if (event.httpMethod === 'POST' && path === '/auth/verify-code') {
+      const result = await verifyLoginCode(parseBody(event));
+      return response(result.success ? 200 : 401, result);
+    }
+
     if (event.httpMethod === 'POST' && path === '/zoho/crm/client') {
       const { client } = parseBody(event);
       return response(200, await zohoCRMClient(client));
+    }
+
+    if (event.httpMethod === 'POST' && path === '/zoho/crm/deal') {
+      const { order } = parseBody(event);
+      return response(200, await zohoCRMDealForOrder(order));
+    }
+
+    if (event.httpMethod === 'PUT' && path === '/zoho/crm/deal/stage') {
+      return response(200, await zohoCRMDealStage(parseBody(event)));
     }
 
     if (event.httpMethod === 'GET' && path === '/zoho/crm/contacts') {
