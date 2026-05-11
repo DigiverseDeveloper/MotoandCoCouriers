@@ -12,20 +12,92 @@ const STAGE_BY_STATUS = {
   "Paid - future use": "PAID",
 };
 
+function pathOf(url) {
+  try { return new URL(String(url || ""), window.location.origin).pathname; } catch { return String(url || ""); }
+}
+
+function queryUser(url) {
+  try {
+    const parsed = new URL(String(url || ""), window.location.origin);
+    const role = parsed.searchParams.get("role") || "";
+    const email = parsed.searchParams.get("email") || "";
+    return email ? { role, email } : null;
+  } catch {
+    return null;
+  }
+}
+
 function isSnapshot(url, method) {
-  return method === "PUT" && String(url || "").endsWith("/snapshot");
+  return method === "PUT" && pathOf(url).endsWith("/snapshot");
+}
+
+function isWorkspace(url, method) {
+  return method === "GET" && pathOf(url).endsWith("/workspace");
 }
 
 function isInvoice(url, method) {
-  return method === "POST" && String(url || "").endsWith("/zoho/books/invoice");
+  return method === "POST" && pathOf(url).endsWith("/zoho/books/invoice");
 }
 
 function isVerifyCode(url, method) {
-  return method === "POST" && String(url || "").endsWith("/auth/verify-code");
+  return method === "POST" && pathOf(url).endsWith("/auth/verify-code");
 }
 
 function copy(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function normaliseEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function idMatches(value, candidates) {
+  return value && candidates.filter(Boolean).includes(String(value));
+}
+
+function orderBelongsToClient(order, user) {
+  if (!user || user.role !== "client") return true;
+  const email = normaliseEmail(user.email);
+  const ids = [
+    user.id,
+    user.zohoContactId,
+    user.zohoAccountId,
+    user.zohoContactId ? `crm_${user.zohoContactId}` : "",
+    user.zohoAccountId ? `crm_account_${user.zohoAccountId}` : "",
+  ].map(String);
+
+  return (
+    normaliseEmail(order.clientEmail) === email ||
+    normaliseEmail(order.email) === email ||
+    idMatches(order.clientId, ids) ||
+    idMatches(order.zohoContactId, ids) ||
+    idMatches(order.zohoAccountId, ids)
+  );
+}
+
+function clientBelongsToUser(client, user) {
+  if (!user || user.role !== "client") return true;
+  const email = normaliseEmail(user.email);
+  return normaliseEmail(client.email) === email || client.id === user.id;
+}
+
+function deliveryBelongsToClient(delivery, user, visibleOrderIds) {
+  if (!user || user.role !== "client") return true;
+  const email = normaliseEmail(user.email);
+  return normaliseEmail(delivery.clientEmail) === email || visibleOrderIds.has(delivery.orderId);
+}
+
+function filterStoreForUser(store, user) {
+  if (!user || user.role !== "client") return store;
+  const orders = (store.orders || []).filter(order => orderBelongsToClient(order, user));
+  const visibleOrderIds = new Set(orders.map(order => order.id));
+
+  return {
+    ...store,
+    clients: (store.clients || []).filter(client => clientBelongsToUser(client, user)),
+    orders,
+    deliveries: (store.deliveries || []).filter(delivery => deliveryBelongsToClient(delivery, user, visibleOrderIds)),
+  };
 }
 
 function mergeOrders(baseOrders = [], zohoOrders = []) {
@@ -157,18 +229,21 @@ export default function ZohoDealBridge({ children }) {
 
       const response = await originalFetch(input, init);
 
-      if (String(url || "").endsWith("/workspace") && response.ok) {
+      if (isWorkspace(url, method) && response.ok) {
         const clone = response.clone();
         const body = await clone.json().catch(() => ({}));
         if (body.store) {
+          const viewer = queryUser(url) || lastUserRef.current;
+          if (viewer?.email) lastUserRef.current = { ...lastUserRef.current, ...viewer };
           const zohoOrders = await pullZohoOrders().catch(error => {
             console.error(error);
             return [];
           });
-          const store = {
+          const mergedStore = {
             ...body.store,
             orders: mergeOrders(body.store.orders || [], zohoOrders),
           };
+          const store = filterStoreForUser(mergedStore, viewer || lastUserRef.current);
           previousStoreRef.current = copy(store);
           for (const order of store.orders || []) {
             if (order.zohoDealId) dealIdsRef.current.set(order.id, order.zohoDealId);
