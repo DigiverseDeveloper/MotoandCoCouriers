@@ -112,6 +112,25 @@ Netlify Functions can keep secrets private, but they are not a long-term databas
 
 Client login uses a one-time 6-digit email code. The code expires after 10 minutes and is only sent to a client email that exists in Zoho CRM. Add `LOGIN_EMAIL_FROM` and `ZEPTO_MAIL_TOKEN` in Netlify before relying on this in production.
 
+## Zoho Books Invoice Setup
+
+Invoice creation is routed through `netlify/functions/books-invoice.mjs` so private Books credentials never reach the browser.
+
+Required Books variables:
+
+- `ZOHO_BOOKS_REFRESH_TOKEN`: OAuth refresh token with Zoho Books invoice/customer/item access.
+- `ZOHO_BOOKS_ORGANIZATION_ID`: the Zoho Books organisation id for Moto & Co.
+- `ZOHO_BOOKS_SERVICE_ITEM_ID`: the Books item used for courier service invoice lines.
+
+Optional Books variables:
+
+- `ZOHO_BOOKS_GST_TAX_ID`: use this if Zoho Books should attach the GST tax code to each invoice line.
+- `ZOHO_BOOKS_FALLBACK_CUSTOMER_ID`: temporary setup helper only. It lets invoice creation work before each CRM client is mapped to a Books customer id.
+
+Safety rule:
+
+If any required Books value is missing, the invoice function returns `success: false`. That means the app will not mark CRM deals as `Invoiced` unless Zoho Books actually creates the invoice.
+
 ## How This Should Be Added To Zoho
 
 Do not upload this React file directly into Zoho as the final system.
