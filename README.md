@@ -37,6 +37,7 @@ To connect real Zoho data, copy `.env.example` to `.env` and add the Zoho values
 - `ZOHO_BOOKS_ORGANIZATION_ID`
 - `ZOHO_BOOKS_SERVICE_ITEM_ID`
 - `ZOHO_BOOKS_GST_TAX_ID` if GST should be applied by Zoho Books
+- `ZOHO_BOOKS_CREATE_CUSTOMERS=true` only if the app should create missing Zoho Books business customers automatically
 
 ## How To Run It
 
@@ -104,7 +105,8 @@ Use these names:
 - `ZOHO_BOOKS_ORGANIZATION_ID`
 - `ZOHO_BOOKS_SERVICE_ITEM_ID`
 - `ZOHO_BOOKS_GST_TAX_ID` if GST should be applied by Zoho Books
-- `ZOHO_BOOKS_FALLBACK_CUSTOMER_ID` only for testing invoices before each client has a Books customer id
+- `ZOHO_BOOKS_CREATE_CUSTOMERS=true` only if missing Zoho Books business customers should be created automatically
+- `ZOHO_BOOKS_FALLBACK_CUSTOMER_ID` only for testing invoices before each CRM Account/business has a Books customer id
 - `LOGIN_EMAIL_FROM` for sending login codes
 - `ZEPTO_MAIL_TOKEN` for Zoho ZeptoMail login-code email
 
@@ -116,6 +118,10 @@ Client login uses a one-time 6-digit email code. The code expires after 10 minut
 
 Invoice creation is routed through `netlify/functions/books-invoice.mjs` so private Books credentials never reach the browser.
 
+Billing rule:
+
+Invoices should bill the business/workshop account, not the individual contact person. The invoice function resolves the Zoho Books Customer from the CRM Account/business name first. The contact email is used as recipient/contact information only.
+
 Required Books variables:
 
 - `ZOHO_BOOKS_REFRESH_TOKEN`: OAuth refresh token with Zoho Books invoice/customer/item access.
@@ -125,7 +131,8 @@ Required Books variables:
 Optional Books variables:
 
 - `ZOHO_BOOKS_GST_TAX_ID`: use this if Zoho Books should attach the GST tax code to each invoice line.
-- `ZOHO_BOOKS_FALLBACK_CUSTOMER_ID`: temporary setup helper only. It lets invoice creation work before each CRM client is mapped to a Books customer id.
+- `ZOHO_BOOKS_CREATE_CUSTOMERS`: set this to `true` only if the app should create a Zoho Books Customer for a CRM Account/business when no matching Books customer is found.
+- `ZOHO_BOOKS_FALLBACK_CUSTOMER_ID`: temporary setup helper only. It lets invoice creation work before each CRM Account/business is mapped to a Books customer id.
 
 Safety rule:
 
@@ -139,7 +146,7 @@ The production version should use Zoho as the record keeper:
 
 - Zoho CRM: clients, contacts, accounts
 - Zoho Creator or CRM custom module: pickup orders and delivery sign-offs
-- Zoho Books: end-of-month invoices
+- Zoho Books: end-of-month invoices billed to the business account
 - This React app: the mobile-friendly front end only
 - A small server/proxy: keeps Zoho API keys out of the browser
 
@@ -151,7 +158,7 @@ Replace browser storage with Zoho-backed actions:
 - New order -> create a Zoho order record
 - Driver pickup -> update order status
 - Driver sign-off -> create delivery/sign-off record
-- Admin invoice button -> create Zoho Books invoice
+- Admin invoice button -> create Zoho Books invoice for the account/business
 - Login -> use Zoho/portal authentication, not local credentials
 
 See `ZOHO_CREATOR_GUIDE.md` for the Zoho-side structure.
