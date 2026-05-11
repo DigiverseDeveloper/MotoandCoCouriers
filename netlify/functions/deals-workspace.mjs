@@ -80,9 +80,12 @@ function dealPipeline() {
 }
 
 function appStatusFromDealStage(stage) {
-  if (stage === dealStage('DELIVERED') || stage === dealStage('INVOICED') || stage === dealStage('PAID')) return 'Delivered';
-  if (stage === dealStage('PICKED_UP') || stage === dealStage('IN_TRANSIT')) return 'In Transit';
-  return 'Pending';
+  if (stage === dealStage('PICKED_UP')) return 'Picked Up';
+  if (stage === dealStage('IN_TRANSIT')) return 'In Transit';
+  if (stage === dealStage('DELIVERED')) return 'Delivered';
+  if (stage === dealStage('INVOICED')) return 'Invoiced';
+  if (stage === dealStage('PAID')) return 'Paid - future use';
+  return 'Order Placed';
 }
 
 function descriptionField(description = '', label) {
@@ -180,7 +183,7 @@ function dealBelongsToClient(deal, contact) {
   );
 }
 
-function dealToOrder(deal) {
+function dealToOrder(deal, clientEmail = '') {
   const description = deal.Description || '';
   const accountName = deal.Account_Name?.name || '';
   const contactName = deal.Contact_Name?.name || '';
@@ -201,7 +204,7 @@ function dealToOrder(deal) {
     clientId: deal.Contact_Name?.id ? `crm_${deal.Contact_Name.id}` : deal.Account_Name?.id ? `crm_account_${deal.Account_Name.id}` : '',
     clientName: contactName || accountName || 'Client',
     businessName: accountName || contactName || 'Client',
-    clientEmail: '',
+    clientEmail,
     clientPhone: '',
     status: appStatusFromDealStage(deal.Stage),
     price: Number(deal.Amount || 0),
@@ -246,7 +249,7 @@ export async function handler(event) {
     const orders = (await fetchDeals(token))
       .filter(deal => !deal.Pipeline || deal.Pipeline === pipeline || deal.Pipeline?.display_value === pipeline || stages.has(deal.Stage))
       .filter(deal => role !== 'client' || dealBelongsToClient(deal, contact))
-      .map(dealToOrder);
+      .map(deal => dealToOrder(deal, role === 'client' ? cleanEmail : ''));
 
     return response(200, { orders, mode: 'live' });
   } catch (error) {
