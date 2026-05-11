@@ -1,5 +1,10 @@
 # Moto & Co Launch Checklist
 
+## Testing Hold
+
+- All live workflow testing is paused until ZeptoMail account review is complete and login-code emails can be sent.
+- Do not mark CRM, customer visibility, driver stage changes, or invoice testing as complete until email login is working.
+
 ## Deferred Tests
 
 - Test email-code login after ZeptoMail account review is complete.
@@ -18,7 +23,7 @@
   - Delivered
   - Invoiced
   - Paid - future use
-- Check the live deploy after GitHub/Netlify accepts the update.
+- Check the live deploy after ZeptoMail is approved and login testing can proceed.
 
 ## Next Build Work
 
