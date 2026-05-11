@@ -1,23 +1,59 @@
+import { createHmac } from 'node:crypto';
+
 const zohoAccountsUrl = (process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho.com.au').replace(/\/$/, '');
 const zohoApiDomain = (process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com.au').replace(/\/$/, '');
 const zohoCrmVersion = process.env.ZOHO_CRM_VERSION || 'v8';
 const tokenCache = new Map();
 const loginCodes = new Map();
+const sessionCookieName = 'motoco_session';
+const sessionMaxAgeSeconds = 8 * 60 * 60;
 
 const staffUsers = [
   { id: 'admin', name: 'Super Admin', email: 'admin@motoandco.com.au', role: 'admin' },
   { id: 'drv1', name: 'Jake Morrow', email: 'jake@motoandco.com.au', role: 'driver' },
 ];
 
-function response(statusCode, body) {
+function response(statusCode, body, extraHeaders = {}) {
   return {
     statusCode,
     headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Headers': 'Content-Type',
       'Access-Control-Allow-Methods': 'POST,OPTIONS',
+      ...extraHeaders,
     },
     body: JSON.stringify(body),
+  };
+}
+
+function sessionSecret() {
+  return process.env.SESSION_SECRET || process.env.ZOHO_CLIENT_SECRET || '';
+}
+
+function signSessionPayload(payload) {
+  const secret = sessionSecret();
+  if (!secret) return '';
+  return createHmac('sha256', secret).update(payload).digest('base64url');
+}
+
+function sessionCookieFor(user) {
+  const secret = sessionSecret();
+  if (!secret || !user) return {};
+
+  const payload = Buffer.from(JSON.stringify({
+    id: user.id,
+    role: user.role,
+    email: normaliseEmail(user.email),
+    name: user.name,
+    businessName: user.businessName,
+    zohoContactId: user.zohoContactId,
+    zohoAccountId: user.zohoAccountId,
+    exp: Date.now() + sessionMaxAgeSeconds * 1000,
+  })).toString('base64url');
+  const signature = signSessionPayload(payload);
+
+  return {
+    'Set-Cookie': `${sessionCookieName}=${payload}.${signature}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${sessionMaxAgeSeconds}`,
   };
 }
 
@@ -179,7 +215,7 @@ async function verifyCode(payload) {
   }
 
   loginCodes.delete(`${role}:${email}`);
-  return response(200, { user: record.user });
+  return response(200, { user: record.user }, sessionCookieFor(record.user));
 }
 
 export async function handler(event) {
