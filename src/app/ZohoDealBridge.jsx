@@ -88,7 +88,7 @@ export default function ZohoDealBridge({ children }) {
             console.error(error);
             return null;
           });
-          if (dealId) order.zoDealId = dealId;
+          if (dealId) order.zohoDealId = dealId;
         }
 
         if (previous && previous.status !== order.status) {
