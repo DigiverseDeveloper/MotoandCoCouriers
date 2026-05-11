@@ -185,6 +185,33 @@ async function zohoCRMContacts() {
   }));
 }
 
+function crmContactToClient(contact) {
+  return {
+    id: `crm_${contact.id}`,
+    role: 'client',
+    name: contact.Full_Name || [contact.First_Name, contact.Last_Name].filter(Boolean).join(' ') || contact.Email,
+    email: contact.Email,
+    phone: contact.Phone || '',
+    businessName: contact.Account_Name?.name || contact.Full_Name || contact.Email,
+    deliveryAddress: contact.Mailing_Street || '',
+    vendors: [],
+    zohoContactId: contact.id,
+    zohoAccountId: contact.Account_Name?.id,
+  };
+}
+
+async function zohoCRMClientByEmail(email) {
+  const token = await accessTokenFor('CRM');
+  if (!token || !email) return null;
+
+  const result = await zohoRequest({
+    token,
+    path: `/crm/${zohoCrmVersion}/Contacts/search?email=${encodeURIComponent(email)}`,
+  });
+  const contact = (result.data || [])[0];
+  return contact ? crmContactToClient(contact) : null;
+}
+
 async function zohoBooksInvoice({ client, deliveries = [], monthLabel, total }) {
   const token = await accessTokenFor('BOOKS');
   const customerId = client.zohoBooksCustomerId || process.env.ZOHO_BOOKS_FALLBACK_CUSTOMER_ID;
@@ -274,7 +301,16 @@ export async function handler(event) {
     if (event.httpMethod === 'POST' && path === '/auth/login') {
       const { role, email } = parseBody(event);
       const pool = role === 'client' ? memoryStore.clients : memoryStore.users;
-      const user = pool.find(item => item.role === role && item.email?.toLowerCase() === String(email).toLowerCase());
+      let user = pool.find(item => item.role === role && item.email?.toLowerCase() === String(email).toLowerCase());
+      if (!user && role === 'client') {
+        user = await zohoCRMClientByEmail(email);
+        if (user) {
+          memoryStore.clients = [
+            ...memoryStore.clients.filter(client => client.email?.toLowerCase() !== user.email?.toLowerCase()),
+            user,
+          ];
+        }
+      }
       if (!user) return response(401, { message: 'No matching account found.' });
       return response(200, { user: publicUser(user) });
     }
