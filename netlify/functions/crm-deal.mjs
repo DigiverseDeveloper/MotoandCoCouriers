@@ -73,6 +73,10 @@ function dealStage(key) {
 }
 
 function dealPipeline() {
+  return normalise(process.env.ZOHO_DEAL_PIPELINE_ID) || process.env.ZOHO_DEAL_PIPELINE || 'Couriers';
+}
+
+function dealPipelineLabel() {
   return process.env.ZOHO_DEAL_PIPELINE || 'Couriers';
 }
 
@@ -260,7 +264,7 @@ function dealDescription(order = {}) {
     '',
     `Portal order id: ${order.id || 'Not supplied'}`,
     `Con note: ${order.conNote || 'Not supplied'}`,
-    `CRM pipeline: ${dealPipeline()}`,
+    `CRM pipeline: ${dealPipelineLabel()}`,
     `Requested stage: ${dealStage('ORDER_PLACED')}`,
     '',
     'Account and contact',
@@ -352,7 +356,7 @@ async function createDeal(order = {}) {
     mode: 'live',
     dealId,
     stage: dealStage('ORDER_PLACED'),
-    pipeline: dealPipeline(),
+    pipeline: dealPipelineLabel(),
     amount,
     summary: {
       conNote: order.conNote,
