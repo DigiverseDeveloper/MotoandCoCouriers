@@ -35,7 +35,7 @@ To connect real Zoho data, copy `.env.example` to `.env` and add the Zoho values
 - `ZOHO_CRM_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
 - `ZOHO_BOOKS_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
 - `ZOHO_BOOKS_ORGANIZATION_ID`
-- `ZOHO_BOOKS_SERVICE_ITEM_ID`
+- the Zoho Books courier item ids listed below
 - `ZOHO_BOOKS_GST_TAX_ID` if GST should be applied by Zoho Books
 - `ZOHO_BOOKS_CREATE_CUSTOMERS=true` only if the app should create missing Zoho Books business customers automatically
 
@@ -103,10 +103,16 @@ Use these names:
 - `ZOHO_CRM_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
 - `ZOHO_BOOKS_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
 - `ZOHO_BOOKS_ORGANIZATION_ID`
-- `ZOHO_BOOKS_SERVICE_ITEM_ID`
 - `ZOHO_BOOKS_GST_TAX_ID` if GST should be applied by Zoho Books
 - `ZOHO_BOOKS_CREATE_CUSTOMERS=true` only if missing Zoho Books business customers should be created automatically
 - `ZOHO_BOOKS_FALLBACK_CUSTOMER_ID` only for testing invoices before each CRM Account/business has a Books customer id
+- `ZOHO_BOOKS_ITEM_TYRE_1_BUNDLE_ID` for `COURIERS - Tyre 1 Bundle` / `MCO-COU-01`
+- `ZOHO_BOOKS_ITEM_TYRE_2_BUNDLE_ID` for `COURIERS - Tyre 2 Bundle` / `MCO-COU-02`
+- `ZOHO_BOOKS_ITEM_TYRE_3_PLUS_BUNDLE_ID` for `COURIERS - Tyre 3+ Bundle` / `MCO-COU-03`
+- `ZOHO_BOOKS_ITEM_UP_TO_5KG_ID` for `COURIERS - Up to 5kg` / `MCO-COU-04`
+- `ZOHO_BOOKS_ITEM_5_TO_10KG_ID` for `COURIERS - 5-10kg` / `MCO-COU-05`
+- `ZOHO_BOOKS_ITEM_10KG_PLUS_ID` only if a 10kg+ Books item exists
+- `ZOHO_BOOKS_ITEM_RETURNS_ID` only if a returns-to-supplier Books item exists
 - `LOGIN_EMAIL_FROM` for sending login codes
 - `ZEPTO_MAIL_TOKEN` for Zoho ZeptoMail login-code email
 
@@ -122,21 +128,32 @@ Billing rule:
 
 Invoices should bill the business/workshop account, not the individual contact person. The invoice function resolves the Zoho Books Customer from the CRM Account/business name first. The contact email is used as recipient/contact information only.
 
+Item rule:
+
+Invoices should use the actual Zoho Books service item for the thing ordered. A single milk run should not be built from multiple smaller tyre bundles. For example, 4 tyres uses the `Tyre 3+ Bundle` item, not two `Tyre 2 Bundle` lines.
+
 Required Books variables:
 
 - `ZOHO_BOOKS_REFRESH_TOKEN`: OAuth refresh token with Zoho Books invoice/customer/item access.
 - `ZOHO_BOOKS_ORGANIZATION_ID`: the Zoho Books organisation id for Moto & Co.
-- `ZOHO_BOOKS_SERVICE_ITEM_ID`: the Books item used for courier service invoice lines.
+- `ZOHO_BOOKS_ITEM_TYRE_1_BUNDLE_ID`: Books item id for `MCO-COU-01`.
+- `ZOHO_BOOKS_ITEM_TYRE_2_BUNDLE_ID`: Books item id for `MCO-COU-02`.
+- `ZOHO_BOOKS_ITEM_TYRE_3_PLUS_BUNDLE_ID`: Books item id for `MCO-COU-03`.
+- `ZOHO_BOOKS_ITEM_UP_TO_5KG_ID`: Books item id for `MCO-COU-04`.
+- `ZOHO_BOOKS_ITEM_5_TO_10KG_ID`: Books item id for `MCO-COU-05`.
 
 Optional Books variables:
 
 - `ZOHO_BOOKS_GST_TAX_ID`: use this if Zoho Books should attach the GST tax code to each invoice line.
+- `ZOHO_BOOKS_ITEM_10KG_PLUS_ID`: use this if the 10kg+ service has its own Books item.
+- `ZOHO_BOOKS_ITEM_RETURNS_ID`: use this if returns to supplier have their own Books item.
+- `ZOHO_BOOKS_SERVICE_ITEM_ID`: legacy fallback only for old delivery records that do not include tyre/package/returns detail.
 - `ZOHO_BOOKS_CREATE_CUSTOMERS`: set this to `true` only if the app should create a Zoho Books Customer for a CRM Account/business when no matching Books customer is found.
 - `ZOHO_BOOKS_FALLBACK_CUSTOMER_ID`: temporary setup helper only. It lets invoice creation work before each CRM Account/business is mapped to a Books customer id.
 
 Safety rule:
 
-If any required Books value is missing, the invoice function returns `success: false`. That means the app will not mark CRM deals as `Invoiced` unless Zoho Books actually creates the invoice.
+If any required Books value is missing for the lines being invoiced, the invoice function returns `success: false`. That means the app will not mark CRM deals as `Invoiced` unless Zoho Books actually creates the invoice with the right item mapping.
 
 ## How This Should Be Added To Zoho
 
