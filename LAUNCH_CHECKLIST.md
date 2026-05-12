@@ -11,7 +11,8 @@
 - Test full Zoho CRM loop after email login is working:
   - Website pickup request creates a Zoho CRM Deal.
   - Deal appears in the Couriers pipeline at Order Placed.
-  - Zoho stage changes pull back into the app for the right customer.
+  - Zoho CRM Deal description includes con note, account/contact, supplier, pickup/drop address, item summary, urgency, preferred window, and quoted total.
+  - Deal stage changes pull back into the app for the right customer.
   - Driver/admin updates push stage changes back to Zoho.
   - Admin/driver workspace sees the full live Couriers pipeline while customers see only their own deals.
 - Test Zoho Books invoice creation after Books variables are configured and login testing can proceed.
@@ -35,6 +36,7 @@
 - Route invoice billing to the CRM Account/business instead of the individual contact person.
 - Route invoice lines to the correct Zoho Books service items by SKU instead of one generic courier item.
 - Treat Zoho Books invoice line rates as GST-inclusive.
+- Enrich pickup request Deal creation so CRM records carry supplier, pickup/drop, item, urgency, and quote details.
 - Check the live deploy after ZeptoMail is approved and login testing can proceed.
 
 ## Next Build Work
@@ -44,3 +46,4 @@
 - Decide whether `ZOHO_BOOKS_CREATE_CUSTOMERS=true` should be enabled, or whether Books customers should be created/matched manually first.
 - Add Books items for 10kg+ and returns to supplier if those should be invoiceable services.
 - Add a persistent CRM Account -> Zoho Books Customer id field when ready, so invoices do not need the temporary fallback customer.
+- Keep password creation/auth hardening until the end, after the Zoho data flow is settled.
