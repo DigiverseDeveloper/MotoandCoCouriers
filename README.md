@@ -35,7 +35,6 @@ To connect real Zoho data, copy `.env.example` to `.env` and add the Zoho values
 - `ZOHO_CRM_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
 - `ZOHO_BOOKS_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
 - `ZOHO_BOOKS_ORGANIZATION_ID`
-- the Zoho Books courier item ids listed below
 - `ZOHO_BOOKS_GST_TAX_ID` if GST should be applied by Zoho Books
 - `ZOHO_BOOKS_CREATE_CUSTOMERS=true` only if the app should create missing Zoho Books business customers automatically
 
@@ -106,15 +105,28 @@ Use these names:
 - `ZOHO_BOOKS_GST_TAX_ID` if GST should be applied by Zoho Books
 - `ZOHO_BOOKS_CREATE_CUSTOMERS=true` only if missing Zoho Books business customers should be created automatically
 - `ZOHO_BOOKS_FALLBACK_CUSTOMER_ID` only for testing invoices before each CRM Account/business has a Books customer id
-- `ZOHO_BOOKS_ITEM_TYRE_1_BUNDLE_ID` for `COURIERS - Tyre 1 Bundle` / `MCO-COU-01`
-- `ZOHO_BOOKS_ITEM_TYRE_2_BUNDLE_ID` for `COURIERS - Tyre 2 Bundle` / `MCO-COU-02`
-- `ZOHO_BOOKS_ITEM_TYRE_3_PLUS_BUNDLE_ID` for `COURIERS - Tyre 3+ Bundle` / `MCO-COU-03`
-- `ZOHO_BOOKS_ITEM_UP_TO_5KG_ID` for `COURIERS - Up to 5kg` / `MCO-COU-04`
-- `ZOHO_BOOKS_ITEM_5_TO_10KG_ID` for `COURIERS - 5-10kg` / `MCO-COU-05`
-- `ZOHO_BOOKS_ITEM_10KG_PLUS_ID` only if a 10kg+ Books item exists
-- `ZOHO_BOOKS_ITEM_RETURNS_ID` only if a returns-to-supplier Books item exists
 - `LOGIN_EMAIL_FROM` for sending login codes
 - `ZEPTO_MAIL_TOKEN` for Zoho ZeptoMail login-code email
+
+Optional item overrides:
+
+The app normally finds these Zoho Books service items by SKU, so you do not need to add their item IDs in Netlify unless auto-match fails:
+
+- `MCO-COU-01`: `COURIERS - Tyre 1 Bundle`
+- `MCO-COU-02`: `COURIERS - Tyre 2 Bundle`
+- `MCO-COU-03`: `COURIERS - Tyre 3+ Bundle`
+- `MCO-COU-04`: `COURIERS - Up to 5kg`
+- `MCO-COU-05`: `COURIERS - 5-10kg`
+
+If an override is ever needed, use:
+
+- `ZOHO_BOOKS_ITEM_TYRE_1_BUNDLE_ID`
+- `ZOHO_BOOKS_ITEM_TYRE_2_BUNDLE_ID`
+- `ZOHO_BOOKS_ITEM_TYRE_3_PLUS_BUNDLE_ID`
+- `ZOHO_BOOKS_ITEM_UP_TO_5KG_ID`
+- `ZOHO_BOOKS_ITEM_5_TO_10KG_ID`
+- `ZOHO_BOOKS_ITEM_10KG_PLUS_ID`
+- `ZOHO_BOOKS_ITEM_RETURNS_ID`
 
 Netlify Functions can keep secrets private, but they are not a long-term database. For a real public launch, orders and delivery sign-offs should be saved into Zoho Creator or Zoho CRM custom modules, not only the function fallback memory.
 
@@ -132,19 +144,21 @@ Item rule:
 
 Invoices should use the actual Zoho Books service item for the thing ordered. A single milk run should not be built from multiple smaller tyre bundles. For example, 4 tyres uses the `Tyre 3+ Bundle` item, not two `Tyre 2 Bundle` lines.
 
+The app now finds the Books item by SKU first. The token must include item read access, such as `ZohoBooks.items.READ`, as well as invoice/customer access.
+
 Required Books variables:
 
 - `ZOHO_BOOKS_REFRESH_TOKEN`: OAuth refresh token with Zoho Books invoice/customer/item access.
 - `ZOHO_BOOKS_ORGANIZATION_ID`: the Zoho Books organisation id for Moto & Co.
-- `ZOHO_BOOKS_ITEM_TYRE_1_BUNDLE_ID`: Books item id for `MCO-COU-01`.
-- `ZOHO_BOOKS_ITEM_TYRE_2_BUNDLE_ID`: Books item id for `MCO-COU-02`.
-- `ZOHO_BOOKS_ITEM_TYRE_3_PLUS_BUNDLE_ID`: Books item id for `MCO-COU-03`.
-- `ZOHO_BOOKS_ITEM_UP_TO_5KG_ID`: Books item id for `MCO-COU-04`.
-- `ZOHO_BOOKS_ITEM_5_TO_10KG_ID`: Books item id for `MCO-COU-05`.
 
 Optional Books variables:
 
 - `ZOHO_BOOKS_GST_TAX_ID`: use this if Zoho Books should attach the GST tax code to each invoice line.
+- `ZOHO_BOOKS_ITEM_TYRE_1_BUNDLE_ID`: optional override for `MCO-COU-01`.
+- `ZOHO_BOOKS_ITEM_TYRE_2_BUNDLE_ID`: optional override for `MCO-COU-02`.
+- `ZOHO_BOOKS_ITEM_TYRE_3_PLUS_BUNDLE_ID`: optional override for `MCO-COU-03`.
+- `ZOHO_BOOKS_ITEM_UP_TO_5KG_ID`: optional override for `MCO-COU-04`.
+- `ZOHO_BOOKS_ITEM_5_TO_10KG_ID`: optional override for `MCO-COU-05`.
 - `ZOHO_BOOKS_ITEM_10KG_PLUS_ID`: use this if the 10kg+ service has its own Books item.
 - `ZOHO_BOOKS_ITEM_RETURNS_ID`: use this if returns to supplier have their own Books item.
 - `ZOHO_BOOKS_SERVICE_ITEM_ID`: legacy fallback only for old delivery records that do not include tyre/package/returns detail.
@@ -153,7 +167,7 @@ Optional Books variables:
 
 Safety rule:
 
-If any required Books value is missing for the lines being invoiced, the invoice function returns `success: false`. That means the app will not mark CRM deals as `Invoiced` unless Zoho Books actually creates the invoice with the right item mapping.
+If any required Books value or matching Books item is missing for the lines being invoiced, the invoice function returns `success: false`. That means the app will not mark CRM deals as `Invoiced` unless Zoho Books actually creates the invoice with the right item mapping.
 
 ## How This Should Be Added To Zoho
 
