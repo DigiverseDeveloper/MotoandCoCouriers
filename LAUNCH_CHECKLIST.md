@@ -18,6 +18,7 @@
 - Confirm invoices bill the Zoho Books Customer linked to the CRM Account/business, with the contact email used only as recipient/contact information.
 - Confirm invoice lines auto-match the correct Zoho Books service items by SKU: Tyre 1, Tyre 2, Tyre 3+, Up to 5kg, and 5-10kg.
 - Confirm 3+ tyre orders do not split into smaller tyre bundles.
+- Confirm Zoho Books treats line rates as GST-inclusive and does not add GST on top.
 
 ## Built Locally - Needs Live Retest
 
@@ -33,6 +34,7 @@
 - Prepare Zoho Books invoice flow and required Books environment variables.
 - Route invoice billing to the CRM Account/business instead of the individual contact person.
 - Route invoice lines to the correct Zoho Books service items by SKU instead of one generic courier item.
+- Treat Zoho Books invoice line rates as GST-inclusive.
 - Check the live deploy after ZeptoMail is approved and login testing can proceed.
 
 ## Next Build Work
