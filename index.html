@@ -111,7 +111,7 @@
             return {
               ...order,
               pickupTiming: futureDate ? 'future-date' : 'next-run',
-              urgency: 'next-run',
+              urgency: futureDate ? 'asap' : 'next-run',
             };
           }
 
