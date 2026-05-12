@@ -3,7 +3,7 @@
 ## Testing Hold
 
 - All live workflow testing is paused until ZeptoMail account review is complete and login-code emails can be sent.
-- Do not mark CRM, customer visibility, driver stage changes, or invoice testing as complete until email login is working.
+- Do not mark CRM, customer visibility, driver stage changes, delivery proof, or invoice testing as complete until email login is working.
 
 ## Deferred Tests
 
@@ -15,6 +15,12 @@
   - Deal stage changes pull back into the app for the right customer.
   - Driver/admin updates push stage changes back to Zoho.
   - Admin/driver workspace sees the full live Couriers pipeline while customers see only their own deals.
+- Test delivery proof sync after email login is working:
+  - Complete a delivery/sign-off in the app.
+  - Confirm the matching CRM Deal moves to Delivered.
+  - Confirm the CRM Deal description includes delivery proof id, receiver, delivered timestamp, signature captured status, item summary, and total.
+  - Confirm repeated snapshots do not duplicate the same proof block.
+  - Confirm where the actual signature image should live before public launch: CRM attachment, CRM custom module, or Zoho Creator Delivery_Signoffs.
 - Test Zoho Books invoice creation after Books variables are configured and login testing can proceed.
 - Confirm invoices bill the Zoho Books Customer linked to the CRM Account/business, with the contact email used only as recipient/contact information.
 - Confirm invoice lines auto-match the correct Zoho Books service items by SKU: Tyre 1, Tyre 2, Tyre 3+, Up to 5kg, and 5-10kg.
@@ -37,6 +43,7 @@
 - Route invoice lines to the correct Zoho Books service items by SKU instead of one generic courier item.
 - Treat Zoho Books invoice line rates as GST-inclusive.
 - Enrich pickup request Deal creation so CRM records carry supplier, pickup/drop, item, urgency, and quote details.
+- Sync completed delivery proof details back to the matching CRM Deal from app snapshots.
 - Check the live deploy after ZeptoMail is approved and login testing can proceed.
 
 ## Next Build Work
@@ -46,4 +53,5 @@
 - Decide whether `ZOHO_BOOKS_CREATE_CUSTOMERS=true` should be enabled, or whether Books customers should be created/matched manually first.
 - Add Books items for 10kg+ and returns to supplier if those should be invoiceable services.
 - Add a persistent CRM Account -> Zoho Books Customer id field when ready, so invoices do not need the temporary fallback customer.
+- Decide where the real signature image should live: CRM attachment, CRM custom module, or Zoho Creator Delivery_Signoffs.
 - Keep password creation/auth hardening until the end, after the Zoho data flow is settled.
