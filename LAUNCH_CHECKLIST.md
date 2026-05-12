@@ -27,6 +27,9 @@
   - Select a business account and invoice month.
   - Confirm only uninvoiced billable deliveries are included.
   - Confirm the invoice is created against the Zoho Books Customer linked to the CRM Account/business, not the individual contact.
+  - Confirm exact Books customer matching works by business name or explicit Books customer id.
+  - Confirm invoices stop with a clear customer-match-required message when there is no confident Books customer match.
+  - Confirm the fallback customer is not used unless `ZOHO_BOOKS_ALLOW_FALLBACK_CUSTOMER=true` is deliberately enabled.
   - Confirm invoice lines auto-match the correct Zoho Books service items by SKU: Tyre 1, Tyre 2, Tyre 3+, Up to 5kg, and 5-10kg.
   - Confirm 3+ tyre orders do not split into smaller tyre bundles.
   - Confirm Zoho Books treats line rates as GST-inclusive and does not add GST on top.
@@ -49,6 +52,7 @@
 - Route invoice billing to the CRM Account/business instead of the individual contact person.
 - Route invoice lines to the correct Zoho Books service items by SKU instead of one generic courier item.
 - Treat Zoho Books invoice line rates as GST-inclusive.
+- Tighten Books customer matching so invoices require an explicit, exact, or deliberately created customer match.
 - Clean up visible app pricing and invoice wording so it says GST-inclusive.
 - Enrich pickup request Deal creation so CRM records carry supplier, pickup/drop, item, urgency, and quote details.
 - Sync completed delivery proof details back to the matching CRM Deal from app snapshots.
@@ -63,6 +67,6 @@
 - Confirm the CRM refresh token includes attachment upload permission for Deal attachments.
 - Decide whether `ZOHO_BOOKS_CREATE_CUSTOMERS=true` should be enabled, or whether Books customers should be created/matched manually first.
 - Add Books items for 10kg+ and returns to supplier if those should be invoiceable services.
-- Add a persistent CRM Account -> Zoho Books Customer id field when ready, so invoices do not need the temporary fallback customer.
+- Add a persistent CRM Account -> Zoho Books Customer id field when ready, so invoices do not need any loose or fallback matching.
 - Decide whether Zoho Creator Delivery_Signoffs should replace CRM attachments as the long-term signature archive.
 - Keep password creation/auth hardening until the end, after the Zoho data flow is settled.
