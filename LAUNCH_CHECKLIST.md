@@ -16,7 +16,7 @@
   - Admin/driver workspace sees the full live Couriers pipeline while customers see only their own deals.
 - Test Zoho Books invoice creation after Books variables are configured and login testing can proceed.
 - Confirm invoices bill the Zoho Books Customer linked to the CRM Account/business, with the contact email used only as recipient/contact information.
-- Confirm invoice lines use the correct Zoho Books service items: Tyre 1, Tyre 2, Tyre 3+, Up to 5kg, and 5-10kg.
+- Confirm invoice lines auto-match the correct Zoho Books service items by SKU: Tyre 1, Tyre 2, Tyre 3+, Up to 5kg, and 5-10kg.
 - Confirm 3+ tyre orders do not split into smaller tyre bundles.
 
 ## Built Locally - Needs Live Retest
@@ -32,12 +32,13 @@
 - Tighten admin/driver views around the live deal pipeline.
 - Prepare Zoho Books invoice flow and required Books environment variables.
 - Route invoice billing to the CRM Account/business instead of the individual contact person.
-- Route invoice lines to the correct Zoho Books service items instead of one generic courier item.
+- Route invoice lines to the correct Zoho Books service items by SKU instead of one generic courier item.
 - Check the live deploy after ZeptoMail is approved and login testing can proceed.
 
 ## Next Build Work
 
 - Configure the Zoho Books variables in Netlify.
+- Confirm the Books refresh token includes `ZohoBooks.items.READ` so SKU lookup works.
 - Decide whether `ZOHO_BOOKS_CREATE_CUSTOMERS=true` should be enabled, or whether Books customers should be created/matched manually first.
 - Add Books items for 10kg+ and returns to supplier if those should be invoiceable services.
 - Add a persistent CRM Account -> Zoho Books Customer id field when ready, so invoices do not need the temporary fallback customer.
