@@ -4,12 +4,71 @@
     <head>
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <title>Courier Booking App Prototype</title>
+      <title>Moto & Co Couriers</title>
       <style>html, body { height: 100%; margin: 0; } #root { height: 100%; }</style>
     </head>
 
     <body>
       <div id="root"></div>
+      <script>
+        (() => {
+          const phraseReplacements = [
+            ['No contracts. No minimum volumes. Just clear per-package rates (ex GST).', 'No contracts. No minimum volumes. Just clear GST-inclusive per-package rates.'],
+            ['All prices exclude GST (10%). GST applied on monthly invoices.', 'All listed prices are GST inclusive.'],
+            ['All prices exclude GST. GST applied on monthly invoices.', 'All listed prices are GST inclusive.'],
+            ['Subtotal ex GST', 'Total GST inclusive'],
+            ['GST (10%)', 'GST included'],
+            ['Total inc GST', 'Invoice total'],
+            ['Total (ex GST)', 'Total (GST inc)'],
+            ['EX GST', 'GST INC'],
+            ['ex GST', 'GST inc'],
+          ];
+
+          function updateTextNode(node) {
+            let next = node.nodeValue;
+            for (const [from, to] of phraseReplacements) next = next.split(from).join(to);
+            next = next.replace(/GST inc\s*·\s*\$[\d,.]+\s*inc GST/g, 'GST inclusive');
+            if (next !== node.nodeValue) node.nodeValue = next;
+          }
+
+          function updateInvoiceTotals(root) {
+            root.querySelectorAll?.('.inv-tot').forEach((box) => {
+              const labelColumn = box.children[0];
+              const valueColumn = box.children[1];
+              const labels = labelColumn ? Array.from(labelColumn.children) : [];
+              const values = valueColumn ? Array.from(valueColumn.children) : [];
+              const inclusiveTotal = values[0]?.textContent?.trim();
+
+              if (labels[0]) labels[0].textContent = 'Total GST inclusive';
+              if (labels[1]) labels[1].textContent = 'GST included';
+              if (labels[2]) labels[2].textContent = 'Invoice total';
+              if (values[1]) values[1].textContent = 'Included';
+              if (values[2] && inclusiveTotal) values[2].textContent = inclusiveTotal;
+            });
+          }
+
+          function updatePage() {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            const nodes = [];
+            while (walker.nextNode()) nodes.push(walker.currentNode);
+            nodes.forEach(updateTextNode);
+            updateInvoiceTotals(document);
+          }
+
+          let queued = false;
+          const queueUpdate = () => {
+            if (queued) return;
+            queued = true;
+            requestAnimationFrame(() => {
+              queued = false;
+              updatePage();
+            });
+          };
+
+          document.addEventListener('DOMContentLoaded', queueUpdate);
+          new MutationObserver(queueUpdate).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+        })();
+      </script>
       <script type="module" src="/src/main.tsx"></script>
     </body>
   </html>
