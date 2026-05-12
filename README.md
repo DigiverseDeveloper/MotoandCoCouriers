@@ -15,7 +15,7 @@ Done:
   - cream: `#f3f3e8`
   - rose: `#e11d48`
 - Added a small live API server so the app no longer relies on browser-only storage.
-- Moved Zoho calls behind the server. When Zoho credentials are added, it can push CRM Accounts/Contacts, pull CRM Contacts, create structured CRM Deals, and create Zoho Books invoices.
+- Moved Zoho calls behind the server. When Zoho credentials are added, it can push CRM Accounts/Contacts, pull CRM Contacts, create structured CRM Deals, update CRM Deals from delivery sign-offs, and create Zoho Books invoices.
 - Removed front-end password storage from the Moto & Co portal.
 
 Important:
@@ -108,6 +108,21 @@ Use these names:
 - `LOGIN_EMAIL_FROM` for sending login codes
 - `ZEPTO_MAIL_TOKEN` for Zoho ZeptoMail login-code email
 
+Optional CRM Deal field mappings:
+
+- `ZOHO_DEAL_FIELD_CON_NOTE`
+- `ZOHO_DEAL_FIELD_SUPPLIER`
+- `ZOHO_DEAL_FIELD_PICKUP_ADDRESS`
+- `ZOHO_DEAL_FIELD_DROP_ADDRESS`
+- `ZOHO_DEAL_FIELD_ITEM_SUMMARY`
+- `ZOHO_DEAL_FIELD_URGENCY`
+- `ZOHO_DEAL_FIELD_PREFERRED_WINDOW`
+- `ZOHO_DEAL_FIELD_DELIVERED_AT`
+- `ZOHO_DEAL_FIELD_RECEIVER_NAME`
+- `ZOHO_DEAL_FIELD_RECEIVER_PHONE`
+- `ZOHO_DEAL_FIELD_SIGNATURE_CAPTURED`
+- `ZOHO_DEAL_FIELD_DELIVERY_PROOF_ID`
+
 Optional item overrides:
 
 The app normally finds these Zoho Books service items by SKU, so you do not need to add their item IDs in Netlify unless auto-match fails:
@@ -148,6 +163,30 @@ Each Deal uses safe standard CRM fields first:
 - `Description`: structured courier details including supplier, pickup address, drop address, item summary, tyre quantity, package bands, returns, urgency, preferred window, quote, and notes.
 
 Optional custom Deal fields can be mapped later by adding environment variables like `ZOHO_DEAL_FIELD_CON_NOTE`, `ZOHO_DEAL_FIELD_SUPPLIER`, or `ZOHO_DEAL_FIELD_PICKUP_ADDRESS`. If those are not set, the structured description still carries the details safely.
+
+## Delivery Proof Setup
+
+Completed delivery sign-offs are synced back to the matching Zoho CRM Deal when the app sends its live snapshot.
+
+The CRM Deal is updated to `Delivered` and the Deal description receives a delivery proof block with:
+
+- delivery proof id
+- delivered timestamp
+- receiver name
+- receiver phone when captured
+- signature captured yes/no
+- item summary
+- GST-inclusive total when available
+
+The actual signature image is not written into the CRM Deal description. For privacy and clean records, the final build should choose one proper signature storage place: a CRM attachment, a CRM custom module, or Zoho Creator `Delivery_Signoffs`.
+
+Optional custom Deal fields can be mapped for proof details using:
+
+- `ZOHO_DEAL_FIELD_DELIVERED_AT`
+- `ZOHO_DEAL_FIELD_RECEIVER_NAME`
+- `ZOHO_DEAL_FIELD_RECEIVER_PHONE`
+- `ZOHO_DEAL_FIELD_SIGNATURE_CAPTURED`
+- `ZOHO_DEAL_FIELD_DELIVERY_PROOF_ID`
 
 ## Zoho Books Invoice Setup
 
@@ -209,7 +248,7 @@ Replace browser storage with Zoho-backed actions:
 - Register client -> create/update Zoho CRM Account and Contact
 - New order -> create a structured Zoho CRM Deal in the Couriers pipeline
 - Driver pickup -> update order status
-- Driver sign-off -> create delivery/sign-off record
+- Driver sign-off -> update CRM Deal and create delivery/sign-off record
 - Admin invoice button -> create Zoho Books invoice for the account/business
 - Login -> keep password creation/auth hardening until the end, after the Zoho data flow is settled
 
