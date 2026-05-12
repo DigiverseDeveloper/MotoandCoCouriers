@@ -15,7 +15,7 @@ Done:
   - cream: `#f3f3e8`
   - rose: `#e11d48`
 - Added a small live API server so the app no longer relies on browser-only storage.
-- Moved Zoho calls behind the server. When Zoho credentials are added, it can push CRM Accounts/Contacts, pull CRM Contacts, and create Zoho Books invoices.
+- Moved Zoho calls behind the server. When Zoho credentials are added, it can push CRM Accounts/Contacts, pull CRM Contacts, create structured CRM Deals, and create Zoho Books invoices.
 - Removed front-end password storage from the Moto & Co portal.
 
 Important:
@@ -132,6 +132,23 @@ Netlify Functions can keep secrets private, but they are not a long-term databas
 
 Client login uses a one-time 6-digit email code. The code expires after 10 minutes and is only sent to a client email that exists in Zoho CRM. Add `LOGIN_EMAIL_FROM` and `ZEPTO_MAIL_TOKEN` in Netlify before relying on this in production.
 
+## Zoho CRM Deal Setup
+
+Pickup requests are created as Deals in the Couriers pipeline through `netlify/functions/crm-deal.mjs`.
+
+Each Deal uses safe standard CRM fields first:
+
+- `Deal_Name`: con note plus business name.
+- `Stage`: `Order Placed`.
+- `Pipeline`: `Couriers` unless `ZOHO_DEAL_PIPELINE` overrides it.
+- `Closing_Date`: preferred pickup date or submitted date.
+- `Amount`: quoted courier amount.
+- `Account_Name`: the workshop/business account.
+- `Contact_Name`: the requester/contact person.
+- `Description`: structured courier details including supplier, pickup address, drop address, item summary, tyre quantity, package bands, returns, urgency, preferred window, quote, and notes.
+
+Optional custom Deal fields can be mapped later by adding environment variables like `ZOHO_DEAL_FIELD_CON_NOTE`, `ZOHO_DEAL_FIELD_SUPPLIER`, or `ZOHO_DEAL_FIELD_PICKUP_ADDRESS`. If those are not set, the structured description still carries the details safely.
+
 ## Zoho Books Invoice Setup
 
 Invoice creation is routed through `netlify/functions/books-invoice.mjs` so private Books credentials never reach the browser.
@@ -190,10 +207,10 @@ The production version should use Zoho as the record keeper:
 Replace browser storage with Zoho-backed actions:
 
 - Register client -> create/update Zoho CRM Account and Contact
-- New order -> create a Zoho order record
+- New order -> create a structured Zoho CRM Deal in the Couriers pipeline
 - Driver pickup -> update order status
 - Driver sign-off -> create delivery/sign-off record
 - Admin invoice button -> create Zoho Books invoice for the account/business
-- Login -> use Zoho/portal authentication, not local credentials
+- Login -> keep password creation/auth hardening until the end, after the Zoho data flow is settled
 
 See `ZOHO_CREATOR_GUIDE.md` for the Zoho-side structure.
