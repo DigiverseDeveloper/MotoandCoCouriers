@@ -404,8 +404,9 @@ async function createInvoice(payload = {}) {
     body: {
       customer_id: customer.customerId,
       date: new Date().toISOString().slice(0, 10),
+      is_inclusive_tax: true,
       line_items: lineItems,
-      notes: `Moto & Co monthly logistics invoice for ${monthLabel}. Billing account: ${accountNameForClient(client) || customer.customerName || 'Zoho Books customer'}.`,
+      notes: `Moto & Co monthly logistics invoice for ${monthLabel}. Rates are GST-inclusive. Billing account: ${accountNameForClient(client) || customer.customerName || 'Zoho Books customer'}.`,
     },
   });
 
@@ -416,7 +417,7 @@ async function createInvoice(payload = {}) {
     customerSource: customer.source,
     invoiceNumber: invoice?.invoice?.invoice_number,
     invoiceId: invoice?.invoice?.invoice_id,
-    message: 'Invoice created in Zoho Books for the business account.',
+    message: 'Invoice created in Zoho Books for the business account with GST-inclusive rates.',
   };
 }
 
