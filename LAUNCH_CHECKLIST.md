@@ -21,11 +21,15 @@
   - Confirm the CRM Deal description includes delivery proof id, receiver, delivered timestamp, signature captured status, item summary, and total.
   - Confirm repeated snapshots do not duplicate the same proof block.
   - Confirm where the actual signature image should live before public launch: CRM attachment, CRM custom module, or Zoho Creator Delivery_Signoffs.
-- Test Zoho Books invoice creation after Books variables are configured and login testing can proceed.
-- Confirm invoices bill the Zoho Books Customer linked to the CRM Account/business, with the contact email used only as recipient/contact information.
-- Confirm invoice lines auto-match the correct Zoho Books service items by SKU: Tyre 1, Tyre 2, Tyre 3+, Up to 5kg, and 5-10kg.
-- Confirm 3+ tyre orders do not split into smaller tyre bundles.
-- Confirm Zoho Books treats line rates as GST-inclusive and does not add GST on top.
+- Test monthly/account Zoho Books invoice creation after Books variables are configured and login testing can proceed:
+  - Select a business account and invoice month.
+  - Confirm only uninvoiced billable deliveries are included.
+  - Confirm the invoice is created against the Zoho Books Customer linked to the CRM Account/business, not the individual contact.
+  - Confirm invoice lines auto-match the correct Zoho Books service items by SKU: Tyre 1, Tyre 2, Tyre 3+, Up to 5kg, and 5-10kg.
+  - Confirm 3+ tyre orders do not split into smaller tyre bundles.
+  - Confirm Zoho Books treats line rates as GST-inclusive and does not add GST on top.
+  - Confirm linked CRM Deals move to Invoiced only after the Books invoice succeeds.
+  - Confirm trying the same account/month again skips CRM Deals already marked Invoiced.
 
 ## Built Locally - Needs Live Retest
 
@@ -44,6 +48,7 @@
 - Treat Zoho Books invoice line rates as GST-inclusive.
 - Enrich pickup request Deal creation so CRM records carry supplier, pickup/drop, item, urgency, and quote details.
 - Sync completed delivery proof details back to the matching CRM Deal from app snapshots.
+- Create monthly/account invoice flow that skips already-invoiced Deals and marks linked CRM Deals as Invoiced only after Books succeeds.
 - Check the live deploy after ZeptoMail is approved and login testing can proceed.
 
 ## Next Build Work
@@ -54,4 +59,5 @@
 - Add Books items for 10kg+ and returns to supplier if those should be invoiceable services.
 - Add a persistent CRM Account -> Zoho Books Customer id field when ready, so invoices do not need the temporary fallback customer.
 - Decide where the real signature image should live: CRM attachment, CRM custom module, or Zoho Creator Delivery_Signoffs.
+- Clean up admin invoice screen wording so it shows GST-inclusive totals consistently.
 - Keep password creation/auth hardening until the end, after the Zoho data flow is settled.
