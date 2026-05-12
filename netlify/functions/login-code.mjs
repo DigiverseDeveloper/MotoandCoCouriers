@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto';
 const zohoAccountsUrl = (process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho.com.au').replace(/\/$/, '');
 const zohoApiDomain = (process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com.au').replace(/\/$/, '');
 const zohoCrmVersion = process.env.ZOHO_CRM_VERSION || 'v8';
+const zeptoMailApiUrl = process.env.ZEPTO_MAIL_API_URL || 'https://api.zeptomail.com/v1.1/email';
 const tokenCache = new Map();
 const sessionCookieName = 'motoco_session';
 const sessionMaxAgeSeconds = 8 * 60 * 60;
@@ -63,6 +64,16 @@ function normaliseEmail(email) {
 
 function compact(value) {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null && item !== ''));
+}
+
+function zeptoAuthorization(token) {
+  const clean = String(token || '').trim();
+  return clean.toLowerCase().startsWith('zoho-enczapikey ') ? clean : `Zoho-enczapikey ${clean}`;
+}
+
+function zeptoErrorMessage(res, text) {
+  if (text) return text;
+  return `${res.status} ${res.statusText}`.trim() || 'ZeptoMail rejected the request without a message.';
 }
 
 async function readBody(event) {
@@ -182,11 +193,12 @@ async function sendLoginCode(email, code) {
     return { sent: false, mode: 'console' };
   }
 
-  const res = await fetch('https://api.zeptomail.com.au/v1.1/email', {
+  const res = await fetch(zeptoMailApiUrl, {
     method: 'POST',
     headers: {
-      Authorization: `Zoho-enczapikey ${token}`,
+      Authorization: zeptoAuthorization(token),
       'Content-Type': 'application/json',
+      Accept: 'application/json',
     },
     body: JSON.stringify(compact({
       from: { address: from, name: 'Moto & Co Couriers' },
@@ -198,7 +210,7 @@ async function sendLoginCode(email, code) {
   });
 
   const text = await res.text();
-  if (!res.ok) throw new Error(`Could not send login email: ${text}`);
+  if (!res.ok) throw new Error(`Could not send login email: ${zeptoErrorMessage(res, text)}`);
   return { sent: true, mode: 'email' };
 }
 
