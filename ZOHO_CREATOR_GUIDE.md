@@ -39,6 +39,17 @@ Useful fields:
 
 Use CRM upsert by email/business name so registration updates an existing customer instead of creating duplicates.
 
+CRM Deals can be used for the Couriers pipeline:
+
+- Order Placed
+- Picked Up
+- In Transit
+- Delivered
+- Invoiced
+- Paid - future use
+
+The current interim build writes pickup details and delivery proof summaries into the matching CRM Deal description. That keeps the pipeline useful now, while leaving the final signature-image storage decision open.
+
 ### Zoho Creator
 
 Use Creator for operational dispatch records if CRM feels too sales-focused.
@@ -73,9 +84,11 @@ Delivery_Signoffs fields:
 - Tyre quantity
 - Parts quantities
 - Returns quantity
-- Total ex GST
+- Total GST-inclusive
 - Signature image
 - Completed at
+
+A proper Delivery_Signoffs form is still the cleanest long-term place for signature images, receiver details, and sign-off retention rules. The CRM Deal should only carry the summary needed for dispatch visibility.
 
 ### Zoho Books
 
@@ -101,7 +114,7 @@ Minimum API actions:
 - CRM upsert Account/Contact
 - CRM or Creator create Pickup Order
 - CRM or Creator update Pickup Order status
-- Creator create Delivery Signoff
+- CRM or Creator attach or store Delivery Signoff
 - Books create invoice
 - Books mark/send invoice if required
 
