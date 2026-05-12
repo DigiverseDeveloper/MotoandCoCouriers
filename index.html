@@ -69,6 +69,48 @@
           new MutationObserver(queueUpdate).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
         })();
       </script>
+      <script>
+        (() => {
+          const originalFetch = window.fetch.bind(window);
+
+          function requestUrl(input) {
+            if (typeof input === 'string') return input;
+            if (input instanceof URL) return input.toString();
+            return input?.url || '';
+          }
+
+          function requestMethod(input, init) {
+            return String(init?.method || input?.method || 'GET').toUpperCase();
+          }
+
+          async function requestBody(input, init) {
+            if (typeof init?.body === 'string') return init.body;
+            if (init?.body instanceof Blob) return init.body.text();
+            if (input instanceof Request) return input.clone().text();
+            return '';
+          }
+
+          function isSnapshotSave(input, init) {
+            return requestMethod(input, init) === 'PUT' && requestUrl(input).includes('/api/live/snapshot');
+          }
+
+          window.fetch = async (input, init = {}) => {
+            const shouldSyncSignature = isSnapshotSave(input, init);
+            const bodyText = shouldSyncSignature ? await requestBody(input, init).catch(() => '') : '';
+            const result = await originalFetch(input, init);
+
+            if (shouldSyncSignature && result.ok && bodyText) {
+              originalFetch('/.netlify/functions/signature-attachment', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: bodyText,
+              }).catch((error) => console.error('Could not sync signature attachment:', error));
+            }
+
+            return result;
+          };
+        })();
+      </script>
       <script type="module" src="/src/main.tsx"></script>
     </body>
   </html>
