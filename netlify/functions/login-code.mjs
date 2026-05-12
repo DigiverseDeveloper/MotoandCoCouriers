@@ -4,9 +4,9 @@ const zohoAccountsUrl = (process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho
 const zohoApiDomain = (process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com.au').replace(/\/$/, '');
 const zohoCrmVersion = process.env.ZOHO_CRM_VERSION || 'v8';
 const tokenCache = new Map();
-const loginCodes = new Map();
 const sessionCookieName = 'motoco_session';
 const sessionMaxAgeSeconds = 8 * 60 * 60;
+const codeWindowMs = 10 * 60 * 1000;
 
 const staffUsers = [
   { id: 'admin', name: 'Super Admin', email: 'admin@motoandco.com.au', role: 'admin' },
@@ -150,8 +150,27 @@ async function findUser(role, email) {
   return contact ? contactToClient(contact) : null;
 }
 
-function makeCode() {
-  return String(Math.floor(100000 + Math.random() * 900000));
+function loginCodeFor({ role, email, bucket }) {
+  const secret = sessionSecret();
+  if (!secret) throw new Error('Login code signing secret is not configured.');
+
+  const digest = createHmac('sha256', secret)
+    .update(`${role}:${normaliseEmail(email)}:${bucket}`)
+    .digest();
+  const value = digest.readUInt32BE(0) % 1000000;
+  return String(value).padStart(6, '0');
+}
+
+function currentCodeBucket() {
+  return Math.floor(Date.now() / codeWindowMs);
+}
+
+function validLoginCode({ role, email, code }) {
+  const submitted = String(code || '').trim();
+  if (!/^\d{6}$/.test(submitted)) return false;
+
+  const bucket = currentCodeBucket();
+  return [bucket, bucket - 1].some(candidate => loginCodeFor({ role, email, bucket: candidate }) === submitted);
 }
 
 async function sendLoginCode(email, code) {
@@ -189,13 +208,7 @@ async function requestCode(payload) {
   const user = await findUser(role, email);
   if (!user) return response(401, { message: 'No matching account found.' });
 
-  const code = makeCode();
-  loginCodes.set(`${role}:${email}`, {
-    code,
-    user,
-    expiresAt: Date.now() + 10 * 60 * 1000,
-  });
-
+  const code = loginCodeFor({ role, email, bucket: currentCodeBucket() });
   const delivery = await sendLoginCode(email, code);
   return response(200, { success: true, email, ...delivery });
 }
@@ -203,19 +216,15 @@ async function requestCode(payload) {
 async function verifyCode(payload) {
   const role = payload.role || 'client';
   const email = normaliseEmail(payload.email);
-  const record = loginCodes.get(`${role}:${email}`);
 
-  if (!record || record.expiresAt < Date.now()) {
-    loginCodes.delete(`${role}:${email}`);
-    return response(401, { message: 'That login code has expired. Request a new code.' });
+  if (!validLoginCode({ role, email, code: payload.code })) {
+    return response(401, { message: 'That login code is not correct or has expired. Request a new code.' });
   }
 
-  if (String(payload.code || '').trim() !== record.code) {
-    return response(401, { message: 'That login code is not correct.' });
-  }
+  const user = await findUser(role, email);
+  if (!user) return response(401, { message: 'No matching account found.' });
 
-  loginCodes.delete(`${role}:${email}`);
-  return response(200, { user: record.user }, sessionCookieFor(record.user));
+  return response(200, { user }, sessionCookieFor(user));
 }
 
 export async function handler(event) {
