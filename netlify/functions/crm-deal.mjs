@@ -38,10 +38,6 @@ function normalise(value) {
   return String(value || '').trim();
 }
 
-function normaliseEmail(email) {
-  return normalise(email).toLowerCase();
-}
-
 function splitName(name = '') {
   const parts = normalise(name).split(/\s+/).filter(Boolean);
   if (parts.length <= 1) return { firstName: '', lastName: parts[0] || 'Client' };
@@ -50,6 +46,18 @@ function splitName(name = '') {
 
 function zohoId(result) {
   return result?.data?.[0]?.details?.id;
+}
+
+function zohoProblem(data, fallback = 'Zoho request failed') {
+  const item = Array.isArray(data?.data) ? data.data.find(entry => entry?.status === 'error' || (entry?.code && entry.code !== 'SUCCESS')) : null;
+  const details = item?.details ? ` ${JSON.stringify(item.details)}` : '';
+  return item ? `${item.code || fallback}: ${item.message || fallback}${details}` : data?.message || fallback;
+}
+
+function assertZohoSuccess(data) {
+  if (!Array.isArray(data?.data)) return;
+  const failed = data.data.find(entry => entry?.status === 'error' || (entry?.code && entry.code !== 'SUCCESS'));
+  if (failed) throw new Error(`Zoho request failed: ${zohoProblem(data)}`);
 }
 
 function dealStage(key) {
@@ -113,10 +121,8 @@ async function zohoRequest({ path, token, method = 'GET', body }) {
 
   const text = await res.text();
   const data = text ? JSON.parse(text) : {};
-  if (!res.ok) {
-    const detail = data?.message || data?.data?.[0]?.message || text || `${res.status} ${res.statusText}`;
-    throw new Error(`Zoho request failed: ${detail}`);
-  }
+  if (!res.ok) throw new Error(`Zoho request failed: ${zohoProblem(data, text || `${res.status} ${res.statusText}`)}`);
+  assertZohoSuccess(data);
   return data;
 }
 
@@ -293,13 +299,7 @@ function optionalCustomFields(order = {}) {
 
 async function createDeal(order = {}) {
   const token = await accessTokenForCrm();
-  if (!token) {
-    return {
-      success: true,
-      mode: 'placeholder',
-      message: 'Pickup request queued. Add Zoho CRM credentials to create Deals live.',
-    };
-  }
+  if (!token) throw new Error('Zoho CRM credentials are missing, so the pickup request was not created as a Deal.');
 
   const client = clientFromOrder(order);
   const clientSync = client.email ? await upsertCrmClient({ token, client }) : {};
@@ -324,11 +324,13 @@ async function createDeal(order = {}) {
     path: `/crm/${zohoCrmVersion}/Deals`,
     body: { data: [dealPayload] },
   });
+  const dealId = zohoId(deal);
+  if (!dealId) throw new Error('Zoho CRM accepted the request but did not return a Deal ID. Check the Deals pipeline and required fields.');
 
   return {
     success: true,
     mode: 'live',
-    dealId: zohoId(deal),
+    dealId,
     stage: dealStage('ORDER_PLACED'),
     pipeline: dealPipeline(),
     amount,
