@@ -35,7 +35,7 @@ To connect real Zoho data, copy `.env.example` to `.env` and add the Zoho values
 - `ZOHO_CRM_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
 - `ZOHO_BOOKS_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
 - `ZOHO_BOOKS_ORGANIZATION_ID`
-- `ZOHO_BOOKS_GST_TAX_ID` if GST should be applied by Zoho Books
+- `ZOHO_BOOKS_GST_TAX_ID` only if Books needs a specific GST tax code attached to each inclusive invoice line
 - `ZOHO_BOOKS_CREATE_CUSTOMERS=true` only if the app should create missing Zoho Books business customers automatically
 
 ## How To Run It
@@ -102,7 +102,7 @@ Use these names:
 - `ZOHO_CRM_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
 - `ZOHO_BOOKS_REFRESH_TOKEN` or `ZOHO_REFRESH_TOKEN`
 - `ZOHO_BOOKS_ORGANIZATION_ID`
-- `ZOHO_BOOKS_GST_TAX_ID` if GST should be applied by Zoho Books
+- `ZOHO_BOOKS_GST_TAX_ID` only if Books needs a specific GST tax code attached to each inclusive invoice line
 - `ZOHO_BOOKS_CREATE_CUSTOMERS=true` only if missing Zoho Books business customers should be created automatically
 - `ZOHO_BOOKS_FALLBACK_CUSTOMER_ID` only for testing invoices before each CRM Account/business has a Books customer id
 - `LOGIN_EMAIL_FROM` for sending login codes
@@ -140,6 +140,10 @@ Billing rule:
 
 Invoices should bill the business/workshop account, not the individual contact person. The invoice function resolves the Zoho Books Customer from the CRM Account/business name first. The contact email is used as recipient/contact information only.
 
+GST rule:
+
+Courier prices are GST-inclusive. The invoice function tells Zoho Books that line rates already include GST, so Books should not add another 10% on top.
+
 Item rule:
 
 Invoices should use the actual Zoho Books service item for the thing ordered. A single milk run should not be built from multiple smaller tyre bundles. For example, 4 tyres uses the `Tyre 3+ Bundle` item, not two `Tyre 2 Bundle` lines.
@@ -153,7 +157,7 @@ Required Books variables:
 
 Optional Books variables:
 
-- `ZOHO_BOOKS_GST_TAX_ID`: use this if Zoho Books should attach the GST tax code to each invoice line.
+- `ZOHO_BOOKS_GST_TAX_ID`: use this only if Zoho Books needs a specific GST tax code attached to each inclusive invoice line.
 - `ZOHO_BOOKS_ITEM_TYRE_1_BUNDLE_ID`: optional override for `MCO-COU-01`.
 - `ZOHO_BOOKS_ITEM_TYRE_2_BUNDLE_ID`: optional override for `MCO-COU-02`.
 - `ZOHO_BOOKS_ITEM_TYRE_3_PLUS_BUNDLE_ID`: optional override for `MCO-COU-03`.
