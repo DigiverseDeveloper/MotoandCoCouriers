@@ -2,6 +2,18 @@ const zohoAccountsUrl = (process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho
 const zohoApiDomain = (process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com.au').replace(/\/$/, '');
 const tokenCache = new Map();
 
+const TYRE_ITEM_RULES = [
+  { minQty: 1, maxQty: 1, envName: 'ZOHO_BOOKS_ITEM_TYRE_1_BUNDLE_ID', label: 'COURIERS - Tyre 1 Bundle', defaultRate: 16.8 },
+  { minQty: 2, maxQty: 2, envName: 'ZOHO_BOOKS_ITEM_TYRE_2_BUNDLE_ID', label: 'COURIERS - Tyre 2 Bundle', defaultRate: 21.6 },
+  { minQty: 3, maxQty: Infinity, envName: 'ZOHO_BOOKS_ITEM_TYRE_3_PLUS_BUNDLE_ID', label: 'COURIERS - Tyre 3+ Bundle', defaultRate: 11.2 },
+];
+
+const PART_ITEM_RULES = [
+  { key: 'p1', envName: 'ZOHO_BOOKS_ITEM_UP_TO_5KG_ID', label: 'COURIERS - Up to 5kg', defaultRate: 15.6 },
+  { key: 'p2', envName: 'ZOHO_BOOKS_ITEM_5_TO_10KG_ID', label: 'COURIERS - 5-10kg', defaultRate: 19.2 },
+  { key: 'p3', envName: 'ZOHO_BOOKS_ITEM_10KG_PLUS_ID', label: 'COURIERS - 10kg+', defaultRate: 22.8 },
+];
+
 function response(statusCode, body) {
   return {
     statusCode,
@@ -153,18 +165,14 @@ async function resolveBooksCustomer({ token, organisationId, client }) {
   return { customerId: '', source: 'missing' };
 }
 
-function missingSettings({ token, organisationId, customerId, itemId }) {
-  return [
-    !token && 'ZOHO_BOOKS_REFRESH_TOKEN or ZOHO_BOOKS_ACCESS_TOKEN',
-    !organisationId && 'ZOHO_BOOKS_ORGANIZATION_ID',
-    !customerId && 'Zoho Books customer for the CRM Account, or temporary ZOHO_BOOKS_FALLBACK_CUSTOMER_ID',
-    !itemId && 'ZOHO_BOOKS_SERVICE_ITEM_ID',
-  ].filter(Boolean);
-}
-
 function money(value) {
   const amount = Number(value || 0);
   return Number.isFinite(amount) ? amount : 0;
+}
+
+function quantity(value) {
+  const amount = Number(value || 0);
+  return Number.isFinite(amount) && amount > 0 ? amount : 0;
 }
 
 function deliveryDescription(delivery = {}) {
@@ -175,16 +183,136 @@ function deliveryDescription(delivery = {}) {
   ].filter(Boolean).join(' - ');
 }
 
-function buildLineItems({ deliveries = [], itemId }) {
-  return deliveries
-    .filter(delivery => money(delivery.totalPrice) > 0)
-    .map(delivery => compact({
-      item_id: itemId,
-      description: deliveryDescription(delivery),
-      quantity: 1,
-      rate: money(delivery.totalPrice),
-      tax_id: process.env.ZOHO_BOOKS_GST_TAX_ID,
-    }));
+function itemIdFor(envName) {
+  return normalise(process.env[envName]);
+}
+
+function addInvoiceLine({ lineItems, missingItems, envName, label, description, quantity: lineQuantity = 1, rate }) {
+  const itemId = itemIdFor(envName);
+  if (!itemId) {
+    missingItems.push({ envName, label });
+    return;
+  }
+
+  lineItems.push(compact({
+    item_id: itemId,
+    description,
+    quantity: lineQuantity,
+    rate: money(rate),
+    tax_id: process.env.ZOHO_BOOKS_GST_TAX_ID,
+  }));
+}
+
+function selectedTyreRule(tyreQty) {
+  return TYRE_ITEM_RULES.find(rule => tyreQty >= rule.minQty && tyreQty <= rule.maxQty) || null;
+}
+
+function partQtyFor(delivery = {}, key) {
+  const partQtys = delivery.partQtys || delivery.partsQtys || delivery.packageQtys || delivery.parts || {};
+  return quantity(partQtys[key] ?? delivery[key]);
+}
+
+function addTyreLine({ delivery, lineItems, missingItems }) {
+  const tyreQty = quantity(delivery.tyreQty || delivery.tyres || delivery.tyreCount);
+  if (!tyreQty) return false;
+
+  const rule = selectedTyreRule(tyreQty);
+  if (!rule) return false;
+
+  const tyreTotal = money(delivery.tyrePrice || delivery.tyreTotal || delivery.tyresTotal);
+  const lineQuantity = tyreQty >= 3 ? tyreQty : 1;
+  const rate = tyreQty >= 3
+    ? (tyreTotal > 0 ? tyreTotal / tyreQty : rule.defaultRate)
+    : (tyreTotal > 0 ? tyreTotal : rule.defaultRate);
+
+  addInvoiceLine({
+    lineItems,
+    missingItems,
+    envName: rule.envName,
+    label: rule.label,
+    description: `${deliveryDescription(delivery)} - ${tyreQty} tyre${tyreQty === 1 ? '' : 's'}`,
+    quantity: lineQuantity,
+    rate,
+  });
+  return true;
+}
+
+function addPartLines({ delivery, lineItems, missingItems }) {
+  let added = false;
+  for (const rule of PART_ITEM_RULES) {
+    const qty = partQtyFor(delivery, rule.key);
+    if (!qty) continue;
+
+    addInvoiceLine({
+      lineItems,
+      missingItems,
+      envName: rule.envName,
+      label: rule.label,
+      description: `${deliveryDescription(delivery)} - ${rule.label}`,
+      quantity: qty,
+      rate: rule.defaultRate,
+    });
+    added = true;
+  }
+  return added;
+}
+
+function addReturnsLine({ delivery, lineItems, missingItems }) {
+  const returnsQty = quantity(delivery.returnsQty || delivery.returnQty || delivery.returns);
+  if (!returnsQty) return false;
+
+  addInvoiceLine({
+    lineItems,
+    missingItems,
+    envName: 'ZOHO_BOOKS_ITEM_RETURNS_ID',
+    label: 'COURIERS - Returns to Supplier',
+    description: `${deliveryDescription(delivery)} - Returns to supplier`,
+    quantity: returnsQty,
+    rate: 6,
+  });
+  return true;
+}
+
+function addFallbackLine({ delivery, lineItems, missingItems }) {
+  if (!money(delivery.totalPrice)) return false;
+
+  addInvoiceLine({
+    lineItems,
+    missingItems,
+    envName: 'ZOHO_BOOKS_SERVICE_ITEM_ID',
+    label: 'Fallback courier service item',
+    description: deliveryDescription(delivery),
+    quantity: 1,
+    rate: money(delivery.totalPrice),
+  });
+  return true;
+}
+
+function buildLineItems({ deliveries = [] }) {
+  const lineItems = [];
+  const missingItems = [];
+
+  for (const delivery of deliveries.filter(item => money(item.totalPrice) > 0)) {
+    const beforeCount = lineItems.length + missingItems.length;
+    addTyreLine({ delivery, lineItems, missingItems });
+    addPartLines({ delivery, lineItems, missingItems });
+    addReturnsLine({ delivery, lineItems, missingItems });
+
+    const nothingMatched = beforeCount === lineItems.length + missingItems.length;
+    if (nothingMatched) addFallbackLine({ delivery, lineItems, missingItems });
+  }
+
+  const uniqueMissingItems = Array.from(new Map(missingItems.map(item => [item.envName, item])).values());
+  return { lineItems, missingItems: uniqueMissingItems };
+}
+
+function missingSettings({ token, organisationId, customerId, missingItems }) {
+  return [
+    !token && 'ZOHO_BOOKS_REFRESH_TOKEN or ZOHO_BOOKS_ACCESS_TOKEN',
+    !organisationId && 'ZOHO_BOOKS_ORGANIZATION_ID',
+    !customerId && 'Zoho Books customer for the CRM Account, or temporary ZOHO_BOOKS_FALLBACK_CUSTOMER_ID',
+    ...missingItems.map(item => `${item.envName} (${item.label})`),
+  ].filter(Boolean);
 }
 
 async function createInvoice(payload = {}) {
@@ -193,9 +321,9 @@ async function createInvoice(payload = {}) {
   const deliveries = Array.isArray(payload.deliveries) ? payload.deliveries : [];
   const monthLabel = payload.monthLabel || new Date().toLocaleString('en-AU', { month: 'long', year: 'numeric' });
   const organisationId = process.env.ZOHO_BOOKS_ORGANIZATION_ID;
-  const itemId = process.env.ZOHO_BOOKS_SERVICE_ITEM_ID;
   const customer = token && organisationId ? await resolveBooksCustomer({ token, organisationId, client }) : { customerId: '', source: 'missing' };
-  const missing = missingSettings({ token, organisationId, customerId: customer.customerId, itemId });
+  const { lineItems, missingItems } = buildLineItems({ deliveries });
+  const missing = missingSettings({ token, organisationId, customerId: customer.customerId, missingItems });
 
   if (missing.length) {
     return {
@@ -206,7 +334,6 @@ async function createInvoice(payload = {}) {
     };
   }
 
-  const lineItems = buildLineItems({ deliveries, itemId });
   if (!lineItems.length) {
     return {
       success: false,
