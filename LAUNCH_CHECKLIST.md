@@ -4,6 +4,7 @@
 
 - All live workflow testing is paused until ZeptoMail account review is complete and login-code emails can be sent.
 - Do not mark CRM, customer visibility, driver stage changes, delivery proof, signature attachment, or invoice testing as complete until email login is working.
+- CRM refresh token was rotated on 12 May 2026; retest pickup request Deal creation after the fresh deploy completes.
 
 ## Deferred Tests
 
