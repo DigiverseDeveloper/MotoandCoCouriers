@@ -76,6 +76,11 @@ function dealPipeline() {
   return process.env.ZOHO_DEAL_PIPELINE || 'Couriers';
 }
 
+function dealLayout() {
+  const layoutId = normalise(process.env.ZOHO_DEAL_LAYOUT_ID || process.env.ZOHO_CRM_DEAL_LAYOUT_ID);
+  return layoutId ? { id: layoutId } : undefined;
+}
+
 async function accessTokenForCrm() {
   const directToken = process.env.ZOHO_CRM_ACCESS_TOKEN;
   const refreshToken = process.env.ZOHO_CRM_REFRESH_TOKEN || process.env.ZOHO_REFRESH_TOKEN;
@@ -227,6 +232,16 @@ function preferredWindow(order = {}) {
   return [order.preferredDate, order.preferredTime].filter(Boolean).join(' ') || order.submittedAt || 'Not supplied';
 }
 
+function pickupTiming(order = {}) {
+  const raw = normalise(order.pickupTiming || order.pickup_timing || order.urgency).toLowerCase();
+  return raw === 'future-date' || raw === 'future date' || raw === 'asap' ? 'Future Date' : 'Next Run';
+}
+
+function requestedPickupDate(order = {}) {
+  if (pickupTiming(order) !== 'Future Date') return '';
+  return normalise(order.requestedPickupDate || order.preferredDate);
+}
+
 function dealName(order = {}) {
   return [
     order.conNote || order.id || 'Pickup request',
@@ -238,6 +253,7 @@ function dealDescription(order = {}) {
   const vendor = vendorDetails(order);
   const client = clientFromOrder(order);
   const amount = money(order.totalPrice || order.price);
+  const pickupDate = requestedPickupDate(order);
 
   return [
     'Moto & Co courier pickup request',
@@ -270,7 +286,8 @@ function dealDescription(order = {}) {
     `Quoted total: ${amount ? `$${amount.toFixed(2)} GST inclusive` : 'Not supplied'}`,
     '',
     'Run details',
-    `Urgency: ${order.urgency || 'next-run'}`,
+    `Pickup timing: ${pickupTiming(order)}`,
+    `Requested pickup date: ${pickupDate || (pickupTiming(order) === 'Future Date' ? 'Not supplied' : 'Next scheduled run')}`,
     `Preferred window: ${preferredWindow(order)}`,
     `Submitted at: ${order.submittedAt || new Date().toISOString()}`,
     order.notes ? `Driver notes: ${order.notes}` : 'Driver notes: None',
@@ -292,7 +309,9 @@ function optionalCustomFields(order = {}) {
     ...customField('DROP_ADDRESS', order.dropLocation || order.deliveryAddress),
     ...customField('ITEM_SUMMARY', itemSummary(order)),
     ...customField('TYRE_QTY', numberOrBlank(order.tyreQty || order.tyres || order.tyreCount) || undefined),
-    ...customField('URGENCY', order.urgency),
+    ...customField('URGENCY', pickupTiming(order)),
+    ...customField('PICKUP_TIMING', pickupTiming(order)),
+    ...customField('REQUESTED_PICKUP_DATE', requestedPickupDate(order) || undefined),
     ...customField('PREFERRED_WINDOW', preferredWindow(order)),
   };
 }
@@ -308,6 +327,7 @@ async function createDeal(order = {}) {
 
   const dealPayload = compact({
     Deal_Name: dealName(order),
+    Layout: dealLayout(),
     Stage: dealStage('ORDER_PLACED'),
     Pipeline: dealPipeline(),
     Closing_Date: closingDate,
