@@ -30,6 +30,7 @@
   - Confirm Zoho Books treats line rates as GST-inclusive and does not add GST on top.
   - Confirm linked CRM Deals move to Invoiced only after the Books invoice succeeds.
   - Confirm trying the same account/month again skips CRM Deals already marked Invoiced.
+- Confirm visible app pricing and invoice labels say GST-inclusive and do not show old ex-GST totals.
 
 ## Built Locally - Needs Live Retest
 
@@ -46,6 +47,7 @@
 - Route invoice billing to the CRM Account/business instead of the individual contact person.
 - Route invoice lines to the correct Zoho Books service items by SKU instead of one generic courier item.
 - Treat Zoho Books invoice line rates as GST-inclusive.
+- Clean up visible app pricing and invoice wording so it says GST-inclusive.
 - Enrich pickup request Deal creation so CRM records carry supplier, pickup/drop, item, urgency, and quote details.
 - Sync completed delivery proof details back to the matching CRM Deal from app snapshots.
 - Create monthly/account invoice flow that skips already-invoiced Deals and marks linked CRM Deals as Invoiced only after Books succeeds.
@@ -59,5 +61,4 @@
 - Add Books items for 10kg+ and returns to supplier if those should be invoiceable services.
 - Add a persistent CRM Account -> Zoho Books Customer id field when ready, so invoices do not need the temporary fallback customer.
 - Decide where the real signature image should live: CRM attachment, CRM custom module, or Zoho Creator Delivery_Signoffs.
-- Clean up admin invoice screen wording so it shows GST-inclusive totals consistently.
 - Keep password creation/auth hardening until the end, after the Zoho data flow is settled.
