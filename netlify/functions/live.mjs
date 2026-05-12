@@ -44,12 +44,16 @@ function compact(value) {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null && item !== ''));
 }
 
+function normalise(value) {
+  return String(value || '').trim();
+}
+
 function normaliseEmail(email) {
-  return String(email || '').trim().toLowerCase();
+  return normalise(email).toLowerCase();
 }
 
 function splitName(name = '') {
-  const parts = String(name).trim().split(/\s+/).filter(Boolean);
+  const parts = normalise(name).split(/\s+/).filter(Boolean);
   if (parts.length <= 1) return { firstName: '', lastName: parts[0] || 'Client' };
   return { firstName: parts.slice(0, -1).join(' '), lastName: parts.at(-1) };
 }
@@ -259,7 +263,103 @@ async function zohoCRMDealForOrder(order) {
   };
 }
 
-async function zohoCRMDealStage({ dealId, stageKey, stage, amount }) {
+function hasDeliveryProof(delivery = {}) {
+  return Boolean(delivery.zohoDealId && (delivery.completedAt || delivery.receiverName || delivery.signature || delivery.signatureDataUrl));
+}
+
+function signatureCaptured(delivery = {}) {
+  return Boolean(delivery.signature || delivery.signatureDataUrl || delivery.signatureImage || delivery.signaturePreview);
+}
+
+function deliveryProofId(delivery = {}) {
+  return normalise(delivery.id || `${delivery.zohoDealId}-${delivery.completedAt || delivery.conNote || 'delivery'}`);
+}
+
+function deliveryProofText(delivery = {}) {
+  const proofId = deliveryProofId(delivery);
+  return [
+    '--- Moto & Co delivery proof ---',
+    `Delivery proof id: ${proofId}`,
+    `Con note: ${delivery.conNote || 'Not supplied'}`,
+    `Business account: ${delivery.businessName || 'Not supplied'}`,
+    `Supplier: ${delivery.vendor || 'Not supplied'}`,
+    `Delivered at: ${delivery.completedAt || new Date().toISOString()}`,
+    `Receiver name: ${delivery.receiverName || 'Not supplied'}`,
+    `Receiver phone: ${delivery.receiverPhone || 'Not supplied'}`,
+    `Signed by: ${delivery.receiverName || 'Not supplied'}`,
+    `Signature captured: ${signatureCaptured(delivery) ? 'Yes' : 'No'}`,
+    `Item summary: ${delivery.itemsDesc || 'Not supplied'}`,
+    `Tyre quantity: ${delivery.tyreQty || 0}`,
+    `Parts total: ${delivery.partsTotal ? `$${Number(delivery.partsTotal).toFixed(2)}` : '$0.00'}`,
+    `Returns quantity: ${delivery.returnsQty || 0}`,
+    `Delivery total: ${delivery.totalPrice ? `$${Number(delivery.totalPrice).toFixed(2)} GST inclusive` : 'Not supplied'}`,
+  ].join('\n');
+}
+
+function customField(fieldKey, value) {
+  const apiName = process.env[`ZOHO_DEAL_FIELD_${fieldKey}`];
+  return apiName ? { [apiName]: value } : {};
+}
+
+function deliveryProofCustomFields(delivery = {}) {
+  return {
+    ...customField('DELIVERED_AT', delivery.completedAt || new Date().toISOString()),
+    ...customField('RECEIVER_NAME', delivery.receiverName),
+    ...customField('RECEIVER_PHONE', delivery.receiverPhone),
+    ...customField('SIGNATURE_CAPTURED', signatureCaptured(delivery) ? 'Yes' : 'No'),
+    ...customField('DELIVERY_PROOF_ID', deliveryProofId(delivery)),
+  };
+}
+
+async function syncDeliveryProofToCrm({ token, delivery }) {
+  if (!hasDeliveryProof(delivery)) return { skipped: true };
+
+  const proofId = deliveryProofId(delivery);
+  const deal = await zohoRequest({
+    token,
+    path: `/crm/${zohoCrmVersion}/Deals/${encodeURIComponent(delivery.zohoDealId)}?fields=${encodeURIComponent('Description,Stage,Pipeline,Amount')}`,
+  });
+  const existing = deal?.data?.[0] || {};
+  const currentDescription = existing.Description || '';
+  if (currentDescription.includes(`Delivery proof id: ${proofId}`)) return { skipped: true, reason: 'already-synced' };
+
+  const nextDescription = [currentDescription, deliveryProofText(delivery)].filter(Boolean).join('\n\n');
+  await zohoRequest({
+    token,
+    method: 'PUT',
+    path: `/crm/${zohoCrmVersion}/Deals/${encodeURIComponent(delivery.zohoDealId)}`,
+    body: {
+      data: [compact({
+        Stage: dealStage('DELIVERED'),
+        Pipeline: dealPipeline(),
+        Amount: Number(delivery.totalPrice || existing.Amount || 0) || undefined,
+        Description: nextDescription,
+        ...deliveryProofCustomFields(delivery),
+      })],
+    },
+  });
+
+  return { synced: true, proofId };
+}
+
+async function syncDeliveryProofs(deliveries = []) {
+  const token = await accessTokenFor('CRM');
+  if (!token) return [];
+
+  const candidates = deliveries.filter(hasDeliveryProof);
+  const results = [];
+  for (const delivery of candidates) {
+    try {
+      results.push(await syncDeliveryProofToCrm({ token, delivery }));
+    } catch (error) {
+      console.error('Could not sync delivery proof to Zoho CRM:', error);
+      results.push({ synced: false, proofId: deliveryProofId(delivery), message: error instanceof Error ? error.message : 'Could not sync delivery proof.' });
+    }
+  }
+  return results;
+}
+
+async function zohoCRMDealStage({ dealId, stageKey, stage, amount, deliveryProof }) {
   const token = await accessTokenFor('CRM');
   const nextStage = stage || dealStage(stageKey || 'ORDER_PLACED');
 
@@ -285,13 +385,17 @@ async function zohoCRMDealStage({ dealId, stageKey, stage, amount }) {
     },
   });
 
+  if (deliveryProof) {
+    await syncDeliveryProofToCrm({ token, delivery: { ...deliveryProof, zohoDealId: dealId, totalPrice: amount ?? deliveryProof.totalPrice } });
+  }
+
   return {
     success: true,
     mode: 'live',
     dealId,
     stage: nextStage,
     pipeline: dealPipeline(),
-    message: 'Zoho CRM Deal stage updated.',
+    message: deliveryProof ? 'Zoho CRM Deal stage and delivery proof updated.' : 'Zoho CRM Deal stage updated.',
   };
 }
 
@@ -517,7 +621,11 @@ export async function handler(event) {
         orders: store?.orders || [],
         deliveries: store?.deliveries || [],
       };
-      return response(200, { store: memoryStore });
+      const proofSync = await syncDeliveryProofs(memoryStore.deliveries).catch(error => {
+        console.error('Could not sync delivery proofs:', error);
+        return [];
+      });
+      return response(200, { store: memoryStore, proofSync });
     }
 
     if (event.httpMethod === 'POST' && path === '/auth/login') {
