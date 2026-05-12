@@ -15,7 +15,7 @@ Done:
   - cream: `#f3f3e8`
   - rose: `#e11d48`
 - Added a small live API server so the app no longer relies on browser-only storage.
-- Moved Zoho calls behind the server. When Zoho credentials are added, it can push CRM Accounts/Contacts, pull CRM Contacts, create structured CRM Deals, update CRM Deals from delivery sign-offs, and create Zoho Books invoices.
+- Moved Zoho calls behind the server. When Zoho credentials are added, it can push CRM Accounts/Contacts, pull CRM Contacts, create structured CRM Deals, update CRM Deals from delivery sign-offs, attach signature images to CRM Deals, and create Zoho Books invoices.
 - Removed front-end password storage from the Moto & Co portal.
 
 Important:
@@ -178,7 +178,11 @@ The CRM Deal is updated to `Delivered` and the Deal description receives a deliv
 - item summary
 - GST-inclusive total when available
 
-The actual signature image is not written into the CRM Deal description. For privacy and clean records, the final build should choose one proper signature storage place: a CRM attachment, a CRM custom module, or Zoho Creator `Delivery_Signoffs`.
+The drawn signature image is also uploaded to the matching CRM Deal as an attachment through `netlify/functions/signature-attachment.mjs`. The Deal description receives a small signature attachment block with the proof id and attachment id so repeated syncs do not upload the same signature again.
+
+The CRM refresh token must allow attachment upload on Deals. If signature upload fails, the normal delivery proof summary can still sync, and the failure should be checked in Netlify function logs during testing.
+
+Longer term, Zoho Creator `Delivery_Signoffs` is still the cleaner archive if Moto & Co wants retention rules and structured sign-off reporting outside CRM.
 
 Optional custom Deal fields can be mapped for proof details using:
 
@@ -248,7 +252,7 @@ Replace browser storage with Zoho-backed actions:
 - Register client -> create/update Zoho CRM Account and Contact
 - New order -> create a structured Zoho CRM Deal in the Couriers pipeline
 - Driver pickup -> update order status
-- Driver sign-off -> update CRM Deal and create delivery/sign-off record
+- Driver sign-off -> update CRM Deal and attach the signature image to the Deal
 - Admin invoice button -> create Zoho Books invoice for the account/business
 - Login -> keep password creation/auth hardening until the end, after the Zoho data flow is settled
 
