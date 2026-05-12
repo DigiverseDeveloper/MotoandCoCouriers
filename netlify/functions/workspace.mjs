@@ -67,6 +67,17 @@ function descriptionField(description = '', label) {
   return value && value !== 'Not supplied' ? value : '';
 }
 
+function pickupTimingFromDescription(description = '') {
+  const timing = descriptionField(description, 'Pickup timing').toLowerCase();
+  const legacyPriority = descriptionField(description, 'Priority').toLowerCase();
+  return timing === 'future date' || legacyPriority === 'asap' ? 'future-date' : 'next-run';
+}
+
+function requestedPickupDateFromDescription(description = '') {
+  const value = descriptionField(description, 'Requested pickup date');
+  return value && value !== 'Next scheduled run' ? value : '';
+}
+
 async function accessTokenForCRM() {
   const directToken = process.env.ZOHO_CRM_ACCESS_TOKEN;
   const refreshToken = process.env.ZOHO_CRM_REFRESH_TOKEN || process.env.ZOHO_REFRESH_TOKEN;
@@ -190,6 +201,7 @@ function dealToOrder(deal, clientEmail = '') {
   const accountName = deal.Account_Name?.name || '';
   const contactName = deal.Contact_Name?.name || '';
   const conNote = descriptionField(description, 'Con note') || deal.Deal_Name?.split(' - ').at(-1) || deal.id;
+  const requestedPickupDate = requestedPickupDateFromDescription(description);
 
   return {
     id: `zoho_${deal.id}`,
@@ -198,11 +210,13 @@ function dealToOrder(deal, clientEmail = '') {
     zohoDealPipeline: deal.Pipeline,
     conNote,
     vendor: descriptionField(description, 'Supplier') || 'Supplier',
-    notes: descriptionField(description, 'Notes'),
-    urgency: descriptionField(description, 'Priority') === 'asap' ? 'asap' : 'next-run',
-    preferredDate: deal.Closing_Date || String(deal.Created_Time || new Date().toISOString()).slice(0, 10),
+    notes: descriptionField(description, 'Driver notes') || descriptionField(description, 'Notes'),
+    urgency: 'next-run',
+    pickupTiming: pickupTimingFromDescription(description),
+    requestedPickupDate,
+    preferredDate: requestedPickupDate || deal.Closing_Date || String(deal.Created_Time || new Date().toISOString()).slice(0, 10),
     preferredTime: '09:00',
-    dropLocation: descriptionField(description, 'Delivery address') || '',
+    dropLocation: descriptionField(description, 'Drop address') || descriptionField(description, 'Delivery address') || '',
     clientId: deal.Contact_Name?.id ? `crm_${deal.Contact_Name.id}` : deal.Account_Name?.id ? `crm_account_${deal.Account_Name.id}` : '',
     clientName: contactName || accountName || 'Client',
     businessName: accountName || contactName || 'Client',
