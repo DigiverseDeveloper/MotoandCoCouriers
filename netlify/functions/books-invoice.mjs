@@ -46,16 +46,20 @@ function normaliseKey(value) {
   return normalise(value).toLowerCase();
 }
 
+function normaliseBusinessName(value) {
+  return normaliseKey(value).replace(/\b(pty|ltd|proprietary|limited|the)\b/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
 function normaliseEmail(email) {
   return normalise(email).toLowerCase();
 }
 
+function boolEnv(name) {
+  return ['true', '1', 'yes'].includes(normaliseKey(process.env[name]));
+}
+
 function dealStage(key) {
-  const defaults = {
-    DELIVERED: 'Delivered',
-    INVOICED: 'Invoiced',
-    PAID: 'Paid - future use',
-  };
+  const defaults = { DELIVERED: 'Delivered', INVOICED: 'Invoiced', PAID: 'Paid - future use' };
   return process.env[`ZOHO_DEAL_STAGE_${key}`] || defaults[key] || defaults.DELIVERED;
 }
 
@@ -76,41 +80,22 @@ async function accessTokenFor(service) {
   const cached = tokenCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now() + 60000) return cached.token;
 
-  const params = new URLSearchParams({
-    refresh_token: refreshToken,
-    client_id: clientId,
-    client_secret: clientSecret,
-    grant_type: 'refresh_token',
-  });
-
+  const params = new URLSearchParams({ refresh_token: refreshToken, client_id: clientId, client_secret: clientSecret, grant_type: 'refresh_token' });
   const res = await fetch(`${zohoAccountsUrl}/oauth/v2/token?${params.toString()}`, { method: 'POST' });
   const data = await res.json();
-  if (!res.ok || !data.access_token) {
-    throw new Error(data.error_description || data.error || `Could not refresh Zoho ${service} access token.`);
-  }
+  if (!res.ok || !data.access_token) throw new Error(data.error_description || data.error || `Could not refresh Zoho ${service} access token.`);
 
-  tokenCache.set(cacheKey, {
-    token: data.access_token,
-    expiresAt: Date.now() + Number(data.expires_in || 3600) * 1000,
-  });
+  tokenCache.set(cacheKey, { token: data.access_token, expiresAt: Date.now() + Number(data.expires_in || 3600) * 1000 });
   return data.access_token;
 }
 
-async function accessTokenForBooks() {
-  return accessTokenFor('BOOKS');
-}
-
-async function accessTokenForCrm() {
-  return accessTokenFor('CRM');
-}
+const accessTokenForBooks = () => accessTokenFor('BOOKS');
+const accessTokenForCrm = () => accessTokenFor('CRM');
 
 async function zohoBooksRequest({ path, token, method = 'GET', body }) {
   const res = await fetch(`${zohoApiDomain}${path}`, {
     method,
-    headers: compact({
-      Authorization: `Zoho-oauthtoken ${token}`,
-      'Content-Type': body ? 'application/json' : undefined,
-    }),
+    headers: compact({ Authorization: `Zoho-oauthtoken ${token}`, 'Content-Type': body ? 'application/json' : undefined }),
     body: body ? JSON.stringify(body) : undefined,
   });
 
@@ -126,10 +111,7 @@ async function zohoBooksRequest({ path, token, method = 'GET', body }) {
 async function zohoCrmRequest({ path, token, method = 'GET', body }) {
   const res = await fetch(`${zohoApiDomain}${path}`, {
     method,
-    headers: compact({
-      Authorization: `Zoho-oauthtoken ${token}`,
-      'Content-Type': body ? 'application/json' : undefined,
-    }),
+    headers: compact({ Authorization: `Zoho-oauthtoken ${token}`, 'Content-Type': body ? 'application/json' : undefined }),
     body: body ? JSON.stringify(body) : undefined,
   });
 
@@ -150,25 +132,65 @@ function billingEmailForClient(client = {}) {
   return normaliseEmail(client.billingEmail || client.email || client.contactEmail);
 }
 
-async function findBooksCustomer({ token, organisationId, accountName, email }) {
-  const searchText = accountName || email;
-  if (!searchText) return null;
+function contactNames(contact = {}) {
+  return [contact.contact_name, contact.company_name, contact.customer_name, contact.display_name].map(normalise).filter(Boolean);
+}
 
+function contactEmails(contact = {}) {
+  return [contact.email, contact.primary_email, ...(contact.contact_persons || []).map(person => person.email)].map(normaliseEmail).filter(Boolean);
+}
+
+function contactSummary(contact = {}) {
+  return compact({ id: contact.contact_id, name: contact.contact_name || contact.company_name || contact.display_name, email: contact.email });
+}
+
+function exactBusinessMatches(contacts = [], accountName) {
+  const exact = normaliseKey(accountName);
+  const simplified = normaliseBusinessName(accountName);
+  return contacts.filter(contact => {
+    const names = contactNames(contact);
+    return names.some(name => normaliseKey(name) === exact) || (simplified && names.some(name => normaliseBusinessName(name) === simplified));
+  });
+}
+
+function exactEmailMatches(contacts = [], email) {
+  if (!email) return [];
+  return contacts.filter(contact => contactEmails(contact).includes(email));
+}
+
+async function searchBooksContacts({ token, organisationId, searchText }) {
+  if (!searchText) return [];
   const data = await zohoBooksRequest({
     token,
     path: `/books/v3/contacts?organization_id=${encodeURIComponent(organisationId)}&search_text=${encodeURIComponent(searchText)}`,
   });
+  return data.contacts || [];
+}
 
-  const contacts = data.contacts || [];
-  return contacts.find(contact =>
-    normaliseKey(contact.contact_name) === normaliseKey(accountName) ||
-    normaliseEmail(contact.email) === email
-  ) || contacts[0] || null;
+async function findBooksCustomer({ token, organisationId, accountName, email }) {
+  const byName = await searchBooksContacts({ token, organisationId, searchText: accountName });
+  const byEmail = email && email !== normaliseKey(accountName)
+    ? await searchBooksContacts({ token, organisationId, searchText: email })
+    : [];
+  const contacts = Array.from(new Map([...byName, ...byEmail].map(contact => [contact.contact_id, contact])).values());
+  const businessMatches = exactBusinessMatches(contacts, accountName);
+  const emailMatches = exactEmailMatches(contacts, email);
+
+  if (businessMatches.length === 1) return { customer: businessMatches[0], source: 'matched-exact-business', matches: contacts };
+  if (businessMatches.length > 1) return { customer: null, source: 'ambiguous-business', matches: businessMatches };
+
+  if (emailMatches.length === 1) return { customer: emailMatches[0], source: 'matched-exact-email', matches: contacts };
+  if (emailMatches.length > 1) return { customer: null, source: 'ambiguous-email', matches: emailMatches };
+
+  if (contacts.length === 1 && boolEnv('ZOHO_BOOKS_ALLOW_LOOSE_CUSTOMER_MATCH')) {
+    return { customer: contacts[0], source: 'matched-single-search-result', matches: contacts };
+  }
+
+  return { customer: null, source: contacts.length ? 'needs-manual-match' : 'not-found', matches: contacts };
 }
 
 async function createBooksCustomer({ token, organisationId, client, accountName, email }) {
   if (!accountName) return null;
-
   const data = await zohoBooksRequest({
     token,
     method: 'POST',
@@ -187,28 +209,38 @@ async function createBooksCustomer({ token, organisationId, client, accountName,
       }] : undefined,
     }),
   });
-
   return data.contact || null;
 }
 
+function customerMatchFailure({ source, accountName, email, matches }) {
+  const matchText = (matches || []).map(contactSummary).filter(item => item.id || item.name || item.email);
+  const message = source === 'not-found'
+    ? `Zoho Books invoice not created. No Books Customer matched business "${accountName || 'Unknown'}"${email ? ` or email ${email}` : ''}. Create or link the Books customer first.`
+    : `Zoho Books invoice not created. Customer matching for "${accountName || 'Unknown'}" is not confident enough. Match the CRM Account to the right Books Customer before invoicing.`;
+  return { customerId: '', source, customerName: '', matchRequired: true, matches: matchText, message };
+}
+
 async function resolveBooksCustomer({ token, organisationId, client }) {
-  const explicitCustomerId = client.zohoBooksCustomerId || client.booksCustomerId;
-  if (explicitCustomerId) return { customerId: explicitCustomerId, source: 'client' };
+  const explicitCustomerId = normalise(client.zohoBooksCustomerId || client.booksCustomerId || client.zoho_books_customer_id);
+  if (explicitCustomerId) return { customerId: explicitCustomerId, source: 'explicit-customer-id' };
 
   const accountName = accountNameForClient(client);
   const email = billingEmailForClient(client);
-  const found = await findBooksCustomer({ token, organisationId, accountName, email });
-  if (found?.contact_id) return { customerId: found.contact_id, source: 'matched-account', customerName: found.contact_name };
+  const match = await findBooksCustomer({ token, organisationId, accountName, email });
+  if (match.customer?.contact_id) {
+    return { customerId: match.customer.contact_id, source: match.source, customerName: match.customer.contact_name || match.customer.company_name };
+  }
 
-  if (process.env.ZOHO_BOOKS_CREATE_CUSTOMERS === 'true') {
+  if (match.source === 'not-found' && boolEnv('ZOHO_BOOKS_CREATE_CUSTOMERS')) {
     const created = await createBooksCustomer({ token, organisationId, client, accountName, email });
     if (created?.contact_id) return { customerId: created.contact_id, source: 'created-account', customerName: created.contact_name };
   }
 
-  const fallbackCustomerId = process.env.ZOHO_BOOKS_FALLBACK_CUSTOMER_ID;
-  if (fallbackCustomerId) return { customerId: fallbackCustomerId, source: 'fallback' };
+  if (boolEnv('ZOHO_BOOKS_ALLOW_FALLBACK_CUSTOMER') && process.env.ZOHO_BOOKS_FALLBACK_CUSTOMER_ID) {
+    return { customerId: process.env.ZOHO_BOOKS_FALLBACK_CUSTOMER_ID, source: 'fallback' };
+  }
 
-  return { customerId: '', source: 'missing' };
+  return customerMatchFailure({ source: match.source, accountName, email, matches: match.matches });
 }
 
 function money(value) {
@@ -239,12 +271,7 @@ function stageAlreadyInvoiced(stage) {
 }
 
 function deliveryAlreadyInvoiced(delivery = {}) {
-  return Boolean(
-    delivery.zohoInvoiceId ||
-    delivery.invoiceId ||
-    delivery.invoiceNumber ||
-    stageAlreadyInvoiced(delivery.status || delivery.orderStatus || delivery.crmStage)
-  );
+  return Boolean(delivery.zohoInvoiceId || delivery.invoiceId || delivery.invoiceNumber || stageAlreadyInvoiced(delivery.status || delivery.orderStatus || delivery.crmStage));
 }
 
 function isBillableDelivery(delivery = {}) {
@@ -252,11 +279,7 @@ function isBillableDelivery(delivery = {}) {
 }
 
 function deliveryDescription(delivery = {}) {
-  return [
-    delivery.conNote || 'Delivery',
-    delivery.vendor || 'Vendor',
-    delivery.itemsDesc || 'Moto & Co delivery service',
-  ].filter(Boolean).join(' - ');
+  return [delivery.conNote || 'Delivery', delivery.vendor || 'Vendor', delivery.itemsDesc || 'Moto & Co delivery service'].filter(Boolean).join(' - ');
 }
 
 async function findBooksItemBySku({ token, organisationId, sku, label }) {
@@ -264,15 +287,10 @@ async function findBooksItemBySku({ token, organisationId, sku, label }) {
   if (itemCache.has(cacheKey)) return itemCache.get(cacheKey);
 
   try {
-    const data = await zohoBooksRequest({
-      token,
-      path: `/books/v3/items?organization_id=${encodeURIComponent(organisationId)}&search_text=${encodeURIComponent(sku)}`,
-    });
+    const data = await zohoBooksRequest({ token, path: `/books/v3/items?organization_id=${encodeURIComponent(organisationId)}&search_text=${encodeURIComponent(sku)}` });
     const items = data.items || [];
-    const expectedSku = normaliseKey(sku);
-    const expectedLabel = normaliseKey(label);
-    const found = items.find(item => normaliseKey(item.sku) === expectedSku)
-      || items.find(item => normaliseKey(item.name) === expectedLabel)
+    const found = items.find(item => normaliseKey(item.sku) === normaliseKey(sku))
+      || items.find(item => normaliseKey(item.name) === normaliseKey(label))
       || items[0]
       || null;
     const result = found?.item_id ? { itemId: found.item_id, source: 'sku', itemName: found.name, sku } : { itemId: '', source: 'missing', sku };
@@ -296,14 +314,7 @@ async function addInvoiceLine({ token, organisationId, lineItems, missingItems, 
     missingItems.push({ envName, sku, label, error: item.error });
     return;
   }
-
-  lineItems.push(compact({
-    item_id: item.itemId,
-    description,
-    quantity: lineQuantity,
-    rate: money(rate),
-    tax_id: process.env.ZOHO_BOOKS_GST_TAX_ID,
-  }));
+  lineItems.push(compact({ item_id: item.itemId, description, quantity: lineQuantity, rate: money(rate), tax_id: process.env.ZOHO_BOOKS_GST_TAX_ID }));
 }
 
 function selectedTyreRule(tyreQty) {
@@ -318,28 +329,12 @@ function partQtyFor(delivery = {}, key) {
 async function addTyreLine({ token, organisationId, delivery, lineItems, missingItems }) {
   const tyreQty = quantity(delivery.tyreQty || delivery.tyres || delivery.tyreCount);
   if (!tyreQty) return false;
-
   const rule = selectedTyreRule(tyreQty);
   if (!rule) return false;
-
   const tyreTotal = money(delivery.tyrePrice || delivery.tyreTotal || delivery.tyresTotal);
   const lineQuantity = tyreQty >= 3 ? tyreQty : 1;
-  const rate = tyreQty >= 3
-    ? (tyreTotal > 0 ? tyreTotal / tyreQty : rule.defaultRate)
-    : (tyreTotal > 0 ? tyreTotal : rule.defaultRate);
-
-  await addInvoiceLine({
-    token,
-    organisationId,
-    lineItems,
-    missingItems,
-    envName: rule.envName,
-    sku: rule.sku,
-    label: rule.label,
-    description: `${deliveryDescription(delivery)} - ${tyreQty} tyre${tyreQty === 1 ? '' : 's'}`,
-    quantity: lineQuantity,
-    rate,
-  });
+  const rate = tyreQty >= 3 ? (tyreTotal > 0 ? tyreTotal / tyreQty : rule.defaultRate) : (tyreTotal > 0 ? tyreTotal : rule.defaultRate);
+  await addInvoiceLine({ token, organisationId, lineItems, missingItems, envName: rule.envName, sku: rule.sku, label: rule.label, description: `${deliveryDescription(delivery)} - ${tyreQty} tyre${tyreQty === 1 ? '' : 's'}`, quantity: lineQuantity, rate });
   return true;
 }
 
@@ -348,19 +343,7 @@ async function addPartLines({ token, organisationId, delivery, lineItems, missin
   for (const rule of PART_ITEM_RULES) {
     const qty = partQtyFor(delivery, rule.key);
     if (!qty) continue;
-
-    await addInvoiceLine({
-      token,
-      organisationId,
-      lineItems,
-      missingItems,
-      envName: rule.envName,
-      sku: rule.sku,
-      label: rule.label,
-      description: `${deliveryDescription(delivery)} - ${rule.label}`,
-      quantity: qty,
-      rate: rule.defaultRate,
-    });
+    await addInvoiceLine({ token, organisationId, lineItems, missingItems, envName: rule.envName, sku: rule.sku, label: rule.label, description: `${deliveryDescription(delivery)} - ${rule.label}`, quantity: qty, rate: rule.defaultRate });
     added = true;
   }
   return added;
@@ -369,54 +352,26 @@ async function addPartLines({ token, organisationId, delivery, lineItems, missin
 async function addReturnsLine({ token, organisationId, delivery, lineItems, missingItems }) {
   const returnsQty = quantity(delivery.returnsQty || delivery.returnQty || delivery.returns);
   if (!returnsQty) return false;
-
-  await addInvoiceLine({
-    token,
-    organisationId,
-    lineItems,
-    missingItems,
-    envName: 'ZOHO_BOOKS_ITEM_RETURNS_ID',
-    sku: process.env.ZOHO_BOOKS_RETURNS_SKU,
-    label: 'COURIERS - Returns to Supplier',
-    description: `${deliveryDescription(delivery)} - Returns to supplier`,
-    quantity: returnsQty,
-    rate: 6,
-  });
+  await addInvoiceLine({ token, organisationId, lineItems, missingItems, envName: 'ZOHO_BOOKS_ITEM_RETURNS_ID', sku: process.env.ZOHO_BOOKS_RETURNS_SKU, label: 'COURIERS - Returns to Supplier', description: `${deliveryDescription(delivery)} - Returns to supplier`, quantity: returnsQty, rate: 6 });
   return true;
 }
 
 async function addFallbackLine({ token, organisationId, delivery, lineItems, missingItems }) {
   if (!money(delivery.totalPrice)) return false;
-
-  await addInvoiceLine({
-    token,
-    organisationId,
-    lineItems,
-    missingItems,
-    envName: 'ZOHO_BOOKS_SERVICE_ITEM_ID',
-    sku: process.env.ZOHO_BOOKS_SERVICE_ITEM_SKU,
-    label: 'Fallback courier service item',
-    description: deliveryDescription(delivery),
-    quantity: 1,
-    rate: money(delivery.totalPrice),
-  });
+  await addInvoiceLine({ token, organisationId, lineItems, missingItems, envName: 'ZOHO_BOOKS_SERVICE_ITEM_ID', sku: process.env.ZOHO_BOOKS_SERVICE_ITEM_SKU, label: 'Fallback courier service item', description: deliveryDescription(delivery), quantity: 1, rate: money(delivery.totalPrice) });
   return true;
 }
 
 async function buildLineItems({ token, organisationId, deliveries = [] }) {
   const lineItems = [];
   const missingItems = [];
-
   for (const delivery of deliveries.filter(item => money(item.totalPrice) > 0)) {
     const beforeCount = lineItems.length + missingItems.length;
     await addTyreLine({ token, organisationId, delivery, lineItems, missingItems });
     await addPartLines({ token, organisationId, delivery, lineItems, missingItems });
     await addReturnsLine({ token, organisationId, delivery, lineItems, missingItems });
-
-    const nothingMatched = beforeCount === lineItems.length + missingItems.length;
-    if (nothingMatched) await addFallbackLine({ token, organisationId, delivery, lineItems, missingItems });
+    if (beforeCount === lineItems.length + missingItems.length) await addFallbackLine({ token, organisationId, delivery, lineItems, missingItems });
   }
-
   const uniqueMissingItems = Array.from(new Map(missingItems.map(item => [item.envName, item])).values());
   return { lineItems, missingItems: uniqueMissingItems };
 }
@@ -426,29 +381,24 @@ function missingItemMessage(item) {
   return item.error ? `${base}: ${item.error}` : base;
 }
 
-function missingBaseSettings({ token, organisationId, customerId }) {
+function missingBaseSettings({ token, organisationId, customer }) {
   return [
     !token && 'ZOHO_BOOKS_REFRESH_TOKEN or ZOHO_BOOKS_ACCESS_TOKEN',
     !organisationId && 'ZOHO_BOOKS_ORGANIZATION_ID',
-    !customerId && 'Zoho Books customer for the CRM Account, or temporary ZOHO_BOOKS_FALLBACK_CUSTOMER_ID',
+    customer?.matchRequired && 'Confident Zoho Books customer match for the CRM Account/business',
+    !customer?.customerId && !customer?.matchRequired && 'Zoho Books customer for the CRM Account/business',
   ].filter(Boolean);
 }
 
 async function readCrmDealState({ token, dealId }) {
   if (!token || !dealId) return null;
-  const deal = await zohoCrmRequest({
-    token,
-    path: `/crm/${zohoCrmVersion}/Deals/${encodeURIComponent(dealId)}?fields=${encodeURIComponent('Stage,Description,Pipeline')}`,
-  });
+  const deal = await zohoCrmRequest({ token, path: `/crm/${zohoCrmVersion}/Deals/${encodeURIComponent(dealId)}?fields=${encodeURIComponent('Stage,Description,Pipeline')}` });
   return deal?.data?.[0] || null;
 }
 
 async function filterInvoiceDeliveries({ crmToken, deliveries = [] }) {
   const candidates = deliveries.filter(isBillableDelivery);
-  const excluded = deliveries
-    .filter(delivery => !isBillableDelivery(delivery))
-    .map(delivery => ({ id: deliveryId(delivery), reason: deliveryAlreadyInvoiced(delivery) ? 'already-invoiced' : 'not-billable' }));
-
+  const excluded = deliveries.filter(delivery => !isBillableDelivery(delivery)).map(delivery => ({ id: deliveryId(delivery), reason: deliveryAlreadyInvoiced(delivery) ? 'already-invoiced' : 'not-billable' }));
   if (!crmToken) return { deliveries: candidates, excluded };
 
   const ready = [];
@@ -457,64 +407,34 @@ async function filterInvoiceDeliveries({ crmToken, deliveries = [] }) {
       ready.push(delivery);
       continue;
     }
-
     try {
       const deal = await readCrmDealState({ token: crmToken, dealId: delivery.zohoDealId });
-      if (stageAlreadyInvoiced(deal?.Stage) || normalise(deal?.Description).includes('Books invoice id:')) {
-        excluded.push({ id: deliveryId(delivery), dealId: delivery.zohoDealId, reason: 'crm-deal-already-invoiced' });
-      } else {
-        ready.push(delivery);
-      }
+      if (stageAlreadyInvoiced(deal?.Stage) || normalise(deal?.Description).includes('Books invoice id:')) excluded.push({ id: deliveryId(delivery), dealId: delivery.zohoDealId, reason: 'crm-deal-already-invoiced' });
+      else ready.push(delivery);
     } catch (error) {
       ready.push(delivery);
       excluded.push({ id: deliveryId(delivery), dealId: delivery.zohoDealId, reason: 'could-not-check-crm-stage' });
     }
   }
-
   return { deliveries: ready, excluded };
 }
 
 function invoiceDescriptionBlock({ invoiceId, invoiceNumber, referenceNumber, monthLabel }) {
-  return [
-    '--- Moto & Co invoice ---',
-    `Books invoice id: ${invoiceId || 'Not supplied'}`,
-    `Books invoice number: ${invoiceNumber || 'Not supplied'}`,
-    `Invoice reference: ${referenceNumber}`,
-    `Invoice period: ${monthLabel}`,
-    `Invoiced at: ${new Date().toISOString()}`,
-  ].join('\n');
+  return ['--- Moto & Co invoice ---', `Books invoice id: ${invoiceId || 'Not supplied'}`, `Books invoice number: ${invoiceNumber || 'Not supplied'}`, `Invoice reference: ${referenceNumber}`, `Invoice period: ${monthLabel}`, `Invoiced at: ${new Date().toISOString()}`].join('\n');
 }
 
 async function markDealInvoiced({ token, delivery, invoiceId, invoiceNumber, referenceNumber, monthLabel }) {
   if (!token || !delivery.zohoDealId) return { skipped: true, id: deliveryId(delivery), reason: 'missing-crm-token-or-deal-id' };
-
   const existing = await readCrmDealState({ token, dealId: delivery.zohoDealId });
   const currentDescription = existing?.Description || '';
-  const hasInvoiceBlock = (invoiceId && currentDescription.includes(`Books invoice id: ${invoiceId}`))
-    || (invoiceNumber && currentDescription.includes(`Books invoice number: ${invoiceNumber}`));
-  const nextDescription = hasInvoiceBlock
-    ? currentDescription
-    : [currentDescription, invoiceDescriptionBlock({ invoiceId, invoiceNumber, referenceNumber, monthLabel })].filter(Boolean).join('\n\n');
-
-  await zohoCrmRequest({
-    token,
-    method: 'PUT',
-    path: `/crm/${zohoCrmVersion}/Deals/${encodeURIComponent(delivery.zohoDealId)}`,
-    body: {
-      data: [compact({
-        Stage: dealStage('INVOICED'),
-        Pipeline: dealPipeline(),
-        Description: nextDescription,
-      })],
-    },
-  });
-
+  const hasInvoiceBlock = (invoiceId && currentDescription.includes(`Books invoice id: ${invoiceId}`)) || (invoiceNumber && currentDescription.includes(`Books invoice number: ${invoiceNumber}`));
+  const nextDescription = hasInvoiceBlock ? currentDescription : [currentDescription, invoiceDescriptionBlock({ invoiceId, invoiceNumber, referenceNumber, monthLabel })].filter(Boolean).join('\n\n');
+  await zohoCrmRequest({ token, method: 'PUT', path: `/crm/${zohoCrmVersion}/Deals/${encodeURIComponent(delivery.zohoDealId)}`, body: { data: [compact({ Stage: dealStage('INVOICED'), Pipeline: dealPipeline(), Description: nextDescription })] } });
   return { synced: true, id: deliveryId(delivery), dealId: delivery.zohoDealId };
 }
 
 async function markDealsInvoiced({ token, deliveries, invoiceId, invoiceNumber, referenceNumber, monthLabel }) {
   if (!token) return { mode: 'skipped', message: 'No CRM token available, so CRM Deals were not marked Invoiced.', results: [] };
-
   const results = [];
   for (const delivery of deliveries) {
     try {
@@ -534,48 +454,20 @@ async function createInvoice(payload = {}) {
   const monthLabel = payload.monthLabel || new Date().toLocaleString('en-AU', { month: 'long', year: 'numeric' });
   const organisationId = process.env.ZOHO_BOOKS_ORGANIZATION_ID;
   const customer = token && organisationId ? await resolveBooksCustomer({ token, organisationId, client }) : { customerId: '', source: 'missing' };
-  const baseMissing = missingBaseSettings({ token, organisationId, customerId: customer.customerId });
+  const baseMissing = missingBaseSettings({ token, organisationId, customer });
 
   if (baseMissing.length) {
-    return {
-      success: false,
-      mode: 'setup-required',
-      missing: baseMissing,
-      message: `Zoho Books invoice not created. Add the missing Books settings first: ${baseMissing.join(', ')}.`,
-    };
+    return { success: false, mode: customer.matchRequired ? 'customer-match-required' : 'setup-required', missing: baseMissing, customerMatch: customer, message: customer.message || `Zoho Books invoice not created. Add the missing Books settings first: ${baseMissing.join(', ')}.` };
   }
 
   const filtered = await filterInvoiceDeliveries({ crmToken, deliveries: suppliedDeliveries });
   const deliveries = filtered.deliveries;
-  if (!deliveries.length) {
-    return {
-      success: false,
-      mode: 'no-billable-deliveries',
-      excludedDeliveries: filtered.excluded,
-      message: 'No uninvoiced billable deliveries were supplied for this account invoice.',
-    };
-  }
+  if (!deliveries.length) return { success: false, mode: 'no-billable-deliveries', excludedDeliveries: filtered.excluded, message: 'No uninvoiced billable deliveries were supplied for this account invoice.' };
 
   const { lineItems, missingItems } = await buildLineItems({ token, organisationId, deliveries });
   const missing = missingItems.map(missingItemMessage);
-
-  if (missing.length) {
-    return {
-      success: false,
-      mode: 'setup-required',
-      missing,
-      message: `Zoho Books invoice not created. Add or expose the missing Books items first: ${missing.join(', ')}.`,
-    };
-  }
-
-  if (!lineItems.length) {
-    return {
-      success: false,
-      mode: 'no-billable-deliveries',
-      excludedDeliveries: filtered.excluded,
-      message: 'No billable deliveries were supplied for this invoice.',
-    };
-  }
+  if (missing.length) return { success: false, mode: 'setup-required', missing, message: `Zoho Books invoice not created. Add or expose the missing Books items first: ${missing.join(', ')}.` };
+  if (!lineItems.length) return { success: false, mode: 'no-billable-deliveries', excludedDeliveries: filtered.excluded, message: 'No billable deliveries were supplied for this invoice.' };
 
   const referenceNumber = invoiceReference({ client, monthLabel, deliveries });
   const invoice = await zohoBooksRequest({
@@ -588,33 +480,19 @@ async function createInvoice(payload = {}) {
       reference_number: referenceNumber,
       is_inclusive_tax: true,
       line_items: lineItems,
-      notes: `Moto & Co monthly logistics invoice for ${monthLabel}. Rates are GST-inclusive. Billing account: ${accountNameForClient(client) || customer.customerName || 'Zoho Books customer'}.`,
+      notes: `Moto & Co monthly logistics invoice for ${monthLabel}. Rates are GST-inclusive. Billing account: ${accountNameForClient(client) || customer.customerName || 'Zoho Books customer'}. Customer match: ${customer.source}.`,
     },
   });
 
   const invoiceId = invoice?.invoice?.invoice_id;
   const invoiceNumber = invoice?.invoice?.invoice_number;
   const crmSync = await markDealsInvoiced({ token: crmToken, deliveries, invoiceId, invoiceNumber, referenceNumber, monthLabel });
-
-  return {
-    success: true,
-    mode: 'live',
-    customerId: customer.customerId,
-    customerSource: customer.source,
-    invoiceNumber,
-    invoiceId,
-    referenceNumber,
-    deliveryCount: deliveries.length,
-    excludedDeliveries: filtered.excluded,
-    crmSync,
-    message: 'Monthly account invoice created in Zoho Books. Linked CRM Deals were marked Invoiced when CRM access was available.',
-  };
+  return { success: true, mode: 'live', customerId: customer.customerId, customerSource: customer.source, customerName: customer.customerName, invoiceNumber, invoiceId, referenceNumber, deliveryCount: deliveries.length, excludedDeliveries: filtered.excluded, crmSync, message: 'Monthly account invoice created in Zoho Books using a confident business/customer match. Linked CRM Deals were marked Invoiced when CRM access was available.' };
 }
 
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return response(204, {});
   if (event.httpMethod !== 'POST') return response(405, { message: 'Method not allowed.' });
-
   try {
     return response(200, await createInvoice(parseBody(event)));
   } catch (error) {
