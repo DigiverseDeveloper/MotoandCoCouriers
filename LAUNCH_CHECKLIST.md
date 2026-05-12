@@ -3,7 +3,7 @@
 ## Testing Hold
 
 - All live workflow testing is paused until ZeptoMail account review is complete and login-code emails can be sent.
-- Do not mark CRM, customer visibility, driver stage changes, delivery proof, or invoice testing as complete until email login is working.
+- Do not mark CRM, customer visibility, driver stage changes, delivery proof, signature attachment, or invoice testing as complete until email login is working.
 
 ## Deferred Tests
 
@@ -19,8 +19,10 @@
   - Complete a delivery/sign-off in the app.
   - Confirm the matching CRM Deal moves to Delivered.
   - Confirm the CRM Deal description includes delivery proof id, receiver, delivered timestamp, signature captured status, item summary, and total.
-  - Confirm repeated snapshots do not duplicate the same proof block.
-  - Confirm where the actual signature image should live before public launch: CRM attachment, CRM custom module, or Zoho Creator Delivery_Signoffs.
+  - Confirm the drawn signature image uploads as a CRM Deal attachment.
+  - Confirm the CRM Deal description includes the signature attachment proof id and attachment id.
+  - Confirm repeated snapshots do not duplicate the same proof block or upload the same signature again.
+  - Confirm whether CRM Deal attachment storage is enough for launch, or whether Zoho Creator Delivery_Signoffs should become the final archive.
 - Test monthly/account Zoho Books invoice creation after Books variables are configured and login testing can proceed:
   - Select a business account and invoice month.
   - Confirm only uninvoiced billable deliveries are included.
@@ -50,6 +52,7 @@
 - Clean up visible app pricing and invoice wording so it says GST-inclusive.
 - Enrich pickup request Deal creation so CRM records carry supplier, pickup/drop, item, urgency, and quote details.
 - Sync completed delivery proof details back to the matching CRM Deal from app snapshots.
+- Upload drawn delivery signatures to the matching CRM Deal as attachments.
 - Create monthly/account invoice flow that skips already-invoiced Deals and marks linked CRM Deals as Invoiced only after Books succeeds.
 - Check the live deploy after ZeptoMail is approved and login testing can proceed.
 
@@ -57,8 +60,9 @@
 
 - Configure the Zoho Books variables in Netlify.
 - Confirm the Books refresh token includes `ZohoBooks.items.READ` so SKU lookup works.
+- Confirm the CRM refresh token includes attachment upload permission for Deal attachments.
 - Decide whether `ZOHO_BOOKS_CREATE_CUSTOMERS=true` should be enabled, or whether Books customers should be created/matched manually first.
 - Add Books items for 10kg+ and returns to supplier if those should be invoiceable services.
 - Add a persistent CRM Account -> Zoho Books Customer id field when ready, so invoices do not need the temporary fallback customer.
-- Decide where the real signature image should live: CRM attachment, CRM custom module, or Zoho Creator Delivery_Signoffs.
+- Decide whether Zoho Creator Delivery_Signoffs should replace CRM attachments as the long-term signature archive.
 - Keep password creation/auth hardening until the end, after the Zoho data flow is settled.
