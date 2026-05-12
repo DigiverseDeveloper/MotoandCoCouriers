@@ -20,6 +20,13 @@
             ['GST (10%)', 'GST included'],
             ['Total inc GST', 'Invoice total'],
             ['Total (ex GST)', 'Total (GST inc)'],
+            ['Delivery Priority', 'Pickup Timing'],
+            ['Next available freight day — priority handling', 'Book this pickup for a specific future date'],
+            ['Hold until driver heads this way — no rush', 'Book this pickup on the next scheduled run'],
+            ['Date Submitted', 'Requested Pickup Date'],
+            ['Time Submitted', 'Requested Pickup Time'],
+            ['🔴 ASAP', 'Future Date'],
+            ['ASAP', 'Future Date'],
             ['EX GST', 'GST INC'],
             ['ex GST', 'GST inc'],
           ];
@@ -27,7 +34,7 @@
           function updateTextNode(node) {
             let next = node.nodeValue;
             for (const [from, to] of phraseReplacements) next = next.split(from).join(to);
-            next = next.replace(/GST inc\s*·\s*\$[\d,.]+\s*inc GST/g, 'GST inclusive');
+            next = next.replace(/GST inc\s*\u00b7\s*\$[\d,.]+\s*inc GST/g, 'GST inclusive');
             if (next !== node.nodeValue) node.nodeValue = next;
           }
 
@@ -94,16 +101,45 @@
             return requestMethod(input, init) === 'PUT' && requestUrl(input).includes('/api/live/snapshot');
           }
 
+          function isCrmDealCreate(input) {
+            return requestUrl(input).includes('/api/live/zoho/crm/deal');
+          }
+
+          function normaliseOrderTiming(order) {
+            if (!order || typeof order !== 'object') return order;
+            const futureDate = order.pickupTiming === 'future-date' || order.urgency === 'asap';
+            return {
+              ...order,
+              pickupTiming: futureDate ? 'future-date' : 'next-run',
+              urgency: 'next-run',
+            };
+          }
+
+          function normalisePickupTimingPayload(bodyText) {
+            if (!bodyText) return bodyText;
+            try {
+              const payload = JSON.parse(bodyText);
+              if (payload.order) payload.order = normaliseOrderTiming(payload.order);
+              if (payload.store?.orders) payload.store.orders = payload.store.orders.map(normaliseOrderTiming);
+              return JSON.stringify(payload);
+            } catch {
+              return bodyText;
+            }
+          }
+
           window.fetch = async (input, init = {}) => {
             const shouldSyncSignature = isSnapshotSave(input, init);
-            const bodyText = shouldSyncSignature ? await requestBody(input, init).catch(() => '') : '';
-            const result = await originalFetch(input, init);
+            const shouldNormalisePickupTiming = shouldSyncSignature || isCrmDealCreate(input);
+            const bodyText = (shouldSyncSignature || shouldNormalisePickupTiming) ? await requestBody(input, init).catch(() => '') : '';
+            const nextBodyText = shouldNormalisePickupTiming ? normalisePickupTimingPayload(bodyText) : bodyText;
+            const nextInit = nextBodyText && typeof init?.body === 'string' ? { ...init, body: nextBodyText } : init;
+            const result = await originalFetch(input, nextInit);
 
-            if (shouldSyncSignature && result.ok && bodyText) {
+            if (shouldSyncSignature && result.ok && nextBodyText) {
               originalFetch('/.netlify/functions/signature-attachment', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: bodyText,
+                body: nextBodyText,
               }).catch((error) => console.error('Could not sync signature attachment:', error));
             }
 
