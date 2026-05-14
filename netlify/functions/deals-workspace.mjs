@@ -63,6 +63,16 @@ function normaliseEmail(email) {
   return String(email || '').trim().toLowerCase();
 }
 
+function lookupName(value) {
+  if (!value) return '';
+  if (typeof value === 'string') return value.trim();
+  return String(value.name || value.display_value || value.value || value.id || '').trim();
+}
+
+function firstValue(...values) {
+  return values.map(value => String(value || '').trim()).find(Boolean) || '';
+}
+
 function dealStage(key) {
   const defaults = {
     ORDER_PLACED: 'Order Placed',
@@ -88,8 +98,12 @@ function appStatusFromDealStage(stage) {
   return 'Order Placed';
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function descriptionField(description = '', label) {
-  const match = String(description).match(new RegExp(`^${label}:\\s*(.+)$`, 'im'));
+  const match = String(description).match(new RegExp(`^${escapeRegExp(label)}:\s*(.+)$`, 'im'));
   const value = match?.[1]?.trim();
   return value && value !== 'Not supplied' ? value : '';
 }
@@ -150,6 +164,7 @@ async function contactByEmail(token, email) {
 
 async function fetchDeals(token) {
   const fieldSets = [
+    'Deal_Name,Stage,Pipeline,Closing_Date,Amount,Account_Name,Contact_Name,Description,Created_Time,Modified_Time,Vendor_Pick_Up,Con_Note_Number,Delivery_Notes,Milk_Run_Date,Work_Item_ID,Scheduled_Date_Time',
     'Deal_Name,Stage,Pipeline,Closing_Date,Amount,Account_Name,Contact_Name,Description,Created_Time,Modified_Time',
     'Deal_Name,Stage,Closing_Date,Amount,Account_Name,Contact_Name,Description,Created_Time,Modified_Time',
   ];
@@ -187,7 +202,11 @@ function dealToOrder(deal, clientEmail = '') {
   const description = deal.Description || '';
   const accountName = deal.Account_Name?.name || '';
   const contactName = deal.Contact_Name?.name || '';
-  const conNote = descriptionField(description, 'Con note') || deal.Deal_Name?.split(' - ').at(-1) || deal.id;
+  const conNote = firstValue(deal.Con_Note_Number, descriptionField(description, 'Con note'), deal.Deal_Name?.split(' - ').at(-1), deal.id);
+  const vendor = firstValue(lookupName(deal.Vendor_Pick_Up), descriptionField(description, 'Supplier'), descriptionField(description, 'Pickup supplier'), 'Supplier');
+  const pickupAddress = firstValue(descriptionField(description, 'Pickup address'), descriptionField(description, 'Supplier address'));
+  const dropAddress = firstValue(descriptionField(description, 'Drop address'), descriptionField(description, 'Delivery address'));
+  const milkRunDate = firstValue(deal.Milk_Run_Date, descriptionField(description, 'Milk run date'));
 
   return {
     id: `zoho_${deal.id}`,
@@ -195,12 +214,14 @@ function dealToOrder(deal, clientEmail = '') {
     zohoDealStage: deal.Stage,
     zohoDealPipeline: deal.Pipeline,
     conNote,
-    vendor: descriptionField(description, 'Supplier') || 'Supplier',
-    notes: descriptionField(description, 'Notes'),
-    urgency: descriptionField(description, 'Priority') === 'asap' ? 'asap' : 'next-run',
-    preferredDate: deal.Closing_Date || String(deal.Created_Time || new Date().toISOString()).slice(0, 10),
+    vendor,
+    pickupAddress,
+    notes: firstValue(deal.Delivery_Notes, descriptionField(description, 'Notes'), descriptionField(description, 'Driver notes')),
+    urgency: 'next-run',
+    preferredDate: firstValue(milkRunDate, deal.Closing_Date, String(deal.Created_Time || new Date().toISOString()).slice(0, 10)),
+    requestedPickupDate: milkRunDate,
     preferredTime: '09:00',
-    dropLocation: descriptionField(description, 'Delivery address') || '',
+    dropLocation: dropAddress,
     clientId: deal.Contact_Name?.id ? `crm_${deal.Contact_Name.id}` : deal.Account_Name?.id ? `crm_account_${deal.Account_Name.id}` : '',
     clientName: contactName || accountName || 'Client',
     businessName: accountName || contactName || 'Client',
@@ -208,7 +229,8 @@ function dealToOrder(deal, clientEmail = '') {
     clientPhone: '',
     status: appStatusFromDealStage(deal.Stage),
     price: Number(deal.Amount || 0),
-    submittedAt: deal.Created_Time || new Date().toISOString(),
+    submittedAt: deal.Scheduled_Date_Time || deal.Created_Time || new Date().toISOString(),
+    portalOrderId: firstValue(deal.Work_Item_ID, descriptionField(description, 'Portal order id')),
   };
 }
 
