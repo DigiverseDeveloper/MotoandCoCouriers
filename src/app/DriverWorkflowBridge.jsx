@@ -53,6 +53,27 @@ async function apiJSON(path, options = {}) {
   return body;
 }
 
+async function pullZohoOrders() {
+  const response = await fetch("/.netlify/functions/deals-workspace");
+  if (!response.ok) return [];
+  const body = await response.json().catch(() => ({}));
+  return Array.isArray(body.orders) ? body.orders : [];
+}
+
+function orderMergeKey(order) {
+  return String(order?.id || order?.zohoDealId || order?.conNote || "");
+}
+
+function mergeOrders(baseOrders = [], zohoOrders = []) {
+  const byKey = new Map();
+  for (const order of baseOrders) byKey.set(orderMergeKey(order), order);
+  for (const order of zohoOrders) {
+    const key = orderMergeKey(order);
+    byKey.set(key, { ...(byKey.get(key) || {}), ...order });
+  }
+  return [...byKey.values()].filter(order => orderMergeKey(order));
+}
+
 function defaultItems(order) {
   return {
     tyres: Number(order?.pickupItems?.tyres || order?.tyreQty || 0),
@@ -122,8 +143,7 @@ function PickupItems({ value, onChange }) {
       ))}
     </div>
   );
-}
-
+}\n
 function useSignature(activeKey) {
   const canvasRef = useRef(null);
   const drawing = useRef(false);
@@ -226,10 +246,21 @@ export default function DriverWorkflowBridge() {
   async function refresh() {
     if (!driver) return;
     const email = driver.email ? `&email=${encodeURIComponent(driver.email)}` : "";
-    const data = await apiJSON(`/workspace?role=driver${email}`);
-    setStore(data.store || { orders: [], deliveries: [] });
+    const [data, zohoOrders] = await Promise.all([
+      apiJSON(`/workspace?role=driver${email}`),
+      pullZohoOrders().catch(error => {
+        console.error(error);
+        return [];
+      }),
+    ]);
+    const baseStore = data.store || { orders: [], deliveries: [] };
+    const mergedStore = {
+      ...baseStore,
+      orders: mergeOrders(baseStore.orders || [], zohoOrders),
+    };
+    setStore(mergedStore);
     const nextItems = {};
-    for (const order of data.store?.orders || []) nextItems[order.id] = defaultItems(order);
+    for (const order of mergedStore.orders || []) nextItems[order.id] = defaultItems(order);
     setItemsByOrder(previous => ({ ...nextItems, ...previous }));
   }
 
