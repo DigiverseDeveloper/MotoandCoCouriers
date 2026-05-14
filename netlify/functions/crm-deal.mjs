@@ -310,6 +310,7 @@ function optionalCustomFields(order = {}) {
   const vendor = vendorDetails(order);
   const deliveryNotes = order.notes || order.deliveryNotes;
   return {
+    Pickup_Supplier: vendor.name,
     ...customField('CON_NOTE', order.conNote),
     ...customField('PORTAL_ORDER_ID', order.id),
     ...customField('SUPPLIER', vendor.name),
