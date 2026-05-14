@@ -172,7 +172,12 @@ function handleOrderSubmitClick(event) {
   if (!button) return;
   const buttonText = textOf(button).toLowerCase();
   if (buttonText.includes("place order") || buttonText.includes("placing order")) {
-    enforceMilkRunCutoff({ showPopup: true });
+    const moved = enforceMilkRunCutoff({ showPopup: true });
+    if (moved) {
+      event.preventDefault();
+      event.stopPropagation();
+      setTimeout(() => button.click(), 0);
+    }
   }
 }
 
