@@ -12,6 +12,7 @@ const codeWindowMs = 10 * 60 * 1000;
 const staffUsers = [
   { id: 'admin', name: 'Super Admin', email: 'admin@motoandco.com.au', role: 'admin' },
   { id: 'driver_stephen', name: 'Stephen', email: 'stephen@motoandco.com.au', role: 'driver' },
+  { id: 'driver_gmail_test', name: 'Driver Test', email: 'gcmtm12@gmail.com', role: 'driver' },
 ];
 
 function response(statusCode, body, extraHeaders = {}) {
@@ -60,7 +61,8 @@ function sessionCookieFor(user) {
 }
 
 function normaliseEmail(email) {
-  return String(email || '').trim().toLowerCase();
+  const clean = String(email || '').trim().toLowerCase();
+  return clean.replace(/@gmailcom$/, '@gmail.com');
 }
 
 function compact(value) {
@@ -153,6 +155,11 @@ function zohoUserToStaff(user, role) {
   };
 }
 
+function findLocalStaffUser(email, role) {
+  const cleanEmail = normaliseEmail(email);
+  return staffUsers.find(user => normaliseEmail(user.email) === cleanEmail && (!role || role === 'client' || user.role === role)) || null;
+}
+
 async function findZohoStaffUser(role, email) {
   const token = await accessTokenForCRM();
   if (!token) return null;
@@ -173,10 +180,10 @@ async function findUser(role, email) {
   const cleanEmail = normaliseEmail(email);
   if (!cleanEmail) return null;
 
-  if (role !== 'client') {
-    const localUser = staffUsers.find(user => user.role === role && normaliseEmail(user.email) === cleanEmail);
-    if (localUser) return localUser;
+  const localUser = findLocalStaffUser(cleanEmail, role);
+  if (localUser) return localUser;
 
+  if (role !== 'client') {
     try {
       return await findZohoStaffUser(role, cleanEmail);
     } catch (error) {
