@@ -11,6 +11,7 @@ const codeWindowMs = 10 * 60 * 1000;
 
 const staffUsers = [
   { id: 'admin', name: 'Super Admin', email: 'admin@motoandco.com.au', role: 'admin' },
+  { id: 'driver_stephen', name: 'Stephen', email: 'stephen@motoandco.com.au', role: 'driver' },
 ];
 
 function response(statusCode, body, extraHeaders = {}) {
