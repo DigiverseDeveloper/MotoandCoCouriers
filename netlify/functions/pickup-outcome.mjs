@@ -3,6 +3,7 @@ const zohoApiDomain = (process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com.
 const zohoCrmVersion = process.env.ZOHO_CRM_VERSION || 'v8';
 const tokenCache = new Map();
 const productCache = new Map();
+let allProductsCache = null;
 
 const TYRE_ITEM_RULES = [
   { minQty: 1, maxQty: 1, sku: 'MCO-COU-01', envName: 'ZOHO_CRM_PRODUCT_TYRE_1_BUNDLE_ID', label: 'COURIERS - Tyre 1 Bundle', defaultRate: 16.8, lineQty: tyreQty => tyreQty },
@@ -44,6 +45,10 @@ function normalise(value) {
 
 function normaliseKey(value) {
   return normalise(value).toLowerCase();
+}
+
+function looseKey(value) {
+  return normaliseKey(value).replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function quantity(value) {
@@ -187,6 +192,40 @@ async function searchProductByCriteria({ token, field, value }) {
   }
 }
 
+async function fetchAllProducts(token) {
+  if (allProductsCache) return allProductsCache;
+  const products = [];
+  for (let page = 1; page <= 5; page += 1) {
+    const data = await zohoRequest({
+      token,
+      path: `/crm/${zohoCrmVersion}/Products?fields=${encodeURIComponent('Product_Name,Product_Code,Unit_Price')}&per_page=200&page=${page}`,
+    });
+    products.push(...(data.data || []));
+    if (!data.info?.more_records) break;
+  }
+  allProductsCache = products;
+  return products;
+}
+
+function productMatchesRule(product, rule) {
+  const code = normaliseKey(product.Product_Code || product.Product_Code_s || product.SKU || product.sku);
+  const name = looseKey(product.Product_Name || product.name);
+  const ruleSku = normaliseKey(rule.sku);
+  const ruleName = looseKey(rule.label);
+  return Boolean(
+    (ruleSku && code === ruleSku) ||
+    (ruleSku && name.includes(looseKey(rule.sku))) ||
+    name === ruleName ||
+    name.includes(ruleName) ||
+    ruleName.includes(name)
+  );
+}
+
+async function findProductByList({ token, rule }) {
+  const products = await fetchAllProducts(token);
+  return products.find(product => productMatchesRule(product, rule)) || null;
+}
+
 async function resolveCrmProduct({ token, rule }) {
   const envId = productIdFromEnv(rule);
   if (envId) return { id: envId, name: rule.label, rate: rule.defaultRate, source: 'env' };
@@ -195,10 +234,11 @@ async function resolveCrmProduct({ token, rule }) {
   if (productCache.has(cacheKey)) return productCache.get(cacheKey);
 
   const product = await searchProductByCriteria({ token, field: 'Product_Code', value: rule.sku })
-    || await searchProductByCriteria({ token, field: 'Product_Name', value: rule.label });
+    || await searchProductByCriteria({ token, field: 'Product_Name', value: rule.label })
+    || await findProductByList({ token, rule });
 
   if (!product?.id) {
-    throw new Error(`Could not find CRM Product for ${rule.sku || rule.label}. Add it to Zoho CRM Products or set ${rule.envName} in Netlify.`);
+    throw new Error(`Could not find CRM Product for ${rule.sku || rule.label}. Check that the item exists in Zoho CRM Products, not only Books/Inventory, or set ${rule.envName} in Netlify.`);
   }
 
   const resolved = { id: product.id, name: product.Product_Name || rule.label, rate: productRate(product, rule.defaultRate), source: 'crm' };
