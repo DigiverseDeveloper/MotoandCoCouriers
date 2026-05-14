@@ -75,6 +75,26 @@ function itemSummary(items) {
   return parts.join("; ") || "No items recorded";
 }
 
+function includesSearch(order, search) {
+  const value = search.trim().toLowerCase();
+  if (!value) return true;
+  return [order.conNote, order.vendor, order.businessName, order.clientName, order.dropLocation]
+    .filter(Boolean)
+    .some(item => String(item).toLowerCase().includes(value));
+}
+
+function submittedLabel(order) {
+  const value = order.submittedAt || order.preferredDate;
+  if (!value) return "Submitted today";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Submitted today";
+  return `Submitted ${date.toLocaleDateString("en-AU", { day: "2-digit", month: "short" })}, ${date.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function pickupAddressFor(vendor, order) {
+  return order.pickupAddress || VENDOR_DETAILS[vendor] || "Pickup address not set";
+}
+
 async function apiJSON(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -171,7 +191,7 @@ function useSignature(activeKey) {
     const [x, y] = point(event);
     const context = canvas.getContext("2d");
     context.lineTo(x, y);
-    context.strokeStyle = "#e11d48";
+    context.strokeStyle = "#d70b3c";
     context.lineWidth = 2.5;
     context.lineCap = "round";
     context.stroke();
@@ -199,6 +219,8 @@ export default function DriverWorkflowBridge() {
   const [receiverByStop, setReceiverByStop] = useState({});
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState("");
+  const [vendorFilter, setVendorFilter] = useState("");
   const signature = useSignature(tab);
 
   useEffect(() => {
@@ -253,8 +275,11 @@ export default function DriverWorkflowBridge() {
   const orders = store?.orders || [];
   const pickupOrders = orders.filter(order => normaliseStatus(order.status) === "Order Placed");
   const deliveryOrders = orders.filter(order => ["Picked Up", "In Transit"].includes(normaliseStatus(order.status)));
-  const pickupGroups = useMemo(() => groupBy(pickupOrders, order => order.vendor || "Unknown vendor"), [pickupOrders]);
+  const vendors = useMemo(() => [...new Set(pickupOrders.map(order => order.vendor || "Unknown vendor"))].sort(), [pickupOrders]);
+  const visiblePickupOrders = pickupOrders.filter(order => includesSearch(order, search) && (!vendorFilter || order.vendor === vendorFilter));
+  const pickupGroups = useMemo(() => groupBy(visiblePickupOrders, order => order.vendor || "Unknown vendor"), [visiblePickupOrders]);
   const deliveryGroups = useMemo(() => groupBy(deliveryOrders, orderStopKey), [deliveryOrders]);
+  const today = new Date().toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" });
 
   async function saveStore(nextStore) {
     setStore(nextStore);
@@ -333,93 +358,145 @@ export default function DriverWorkflowBridge() {
   return (
     <div className="dw-shell">
       <style>{styles}</style>
-      <header className="dw-header">
-        <div>
-          <div className="dw-kicker">Moto & Co Couriers</div>
-          <h1>{tab === "milk-run" ? "Milk Run" : "Delivery Stops"}</h1>
-          <p>{new Date().toLocaleDateString("en-AU", { weekday: "long", day: "numeric", month: "long" })} - {driver.name || "Driver"}</p>
+      <header className="dw-topbar">
+        <div className="dw-brand">
+          <span>Moto & Co</span>
+          <strong>Couriers</strong>
+          <em>Not just couriers. Parts people.</em>
         </div>
-        <button className="dw-logout" onClick={() => { sessionStorage.removeItem("motoco_driver_user"); window.location.reload(); }}>Log out</button>
+        <nav className="dw-nav">
+          <button className={tab === "milk-run" ? "active" : ""} onClick={() => setTab("milk-run")}>Today's Run</button>
+          <button className={tab === "delivery" ? "active" : ""} onClick={() => setTab("delivery")}>Sign-Off</button>
+          <button onClick={refresh}>Refresh</button>
+        </nav>
+        <div className="dw-user">
+          <strong>{driver.name || "Driver"}</strong>
+          <span>Driver</span>
+          <button onClick={() => { sessionStorage.removeItem("motoco_driver_user"); window.location.reload(); }}>Logout</button>
+        </div>
       </header>
 
-      <nav className="dw-tabs">
-        <button className={tab === "milk-run" ? "active" : ""} onClick={() => setTab("milk-run")}>Milk Run</button>
-        <button className={tab === "delivery" ? "active" : ""} onClick={() => setTab("delivery")}>Delivery</button>
-        <button onClick={refresh}>Refresh</button>
-      </nav>
+      <main className="dw-page">
+        <section className="dw-titlebar">
+          <div>
+            <h1>{tab === "milk-run" ? <><span>Today's</span> Run</> : <><span>Delivery</span> Sign-Off</>}</h1>
+            <p>{today} - {driver.name || "Driver"} - Brisbane to Gold Coast</p>
+          </div>
+          <div className="dw-stats">
+            <div><strong>{pickupOrders.length}</strong><span>Pickup</span></div>
+            <div><strong>{deliveryOrders.length}</strong><span>En Route</span></div>
+          </div>
+        </section>
 
-      {message && <div className="dw-message" onClick={() => setMessage("")}>{message}</div>}
-      {!store && <div className="dw-empty">Loading driver run...</div>}
+        {message && <div className="dw-alert" onClick={() => setMessage("")}>{message}</div>}
+        {!store && <div className="dw-empty">Loading driver run...</div>}
 
-      {store && tab === "milk-run" && (
-        <main className="dw-main">
-          {Object.keys(pickupGroups).length === 0 && <div className="dw-empty">No pickup stops waiting right now.</div>}
-          {Object.entries(pickupGroups).map(([vendor, groupOrders]) => (
-            <section className="dw-stop" key={vendor}>
-              <div className="dw-stop-head">
-                <div><h2>{vendor}</h2><p>{VENDOR_DETAILS[vendor] || "Pickup address not set"}</p></div>
-                <span>{groupOrders.length} pickup{groupOrders.length === 1 ? "" : "s"}</span>
-              </div>
-              {groupOrders.map(order => (
-                <div className="dw-order" key={order.id}>
-                  <div className="dw-order-top"><strong>{order.conNote}</strong><span>{order.businessName}</span></div>
-                  <p>{order.dropLocation || "No drop-off address"}</p>
-                  {order.notes && <p className="dw-note">{order.notes}</p>}
-                  <PickupItems value={itemsByOrder[order.id] || defaultItems(order)} onChange={next => setItemsByOrder(previous => ({ ...previous, [order.id]: next }))} />
-                </div>
-              ))}
-              <button className="dw-primary" disabled={saving} onClick={() => confirmPickup(vendor, groupOrders)}>Check off this pickup stop</button>
-            </section>
-          ))}
-        </main>
-      )}
+        {store && tab === "milk-run" && (
+          <>
+            {pickupOrders.length > 0 && <div className="dw-alert soft">{pickupOrders.length} pickup order{pickupOrders.length === 1 ? "" : "s"} ready for today's run.</div>}
+            <div className="dw-filters">
+              <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search client, con note or workshop..." />
+              <select value={vendorFilter} onChange={event => setVendorFilter(event.target.value)}>
+                <option value="">All Vendors</option>
+                {vendors.map(vendor => <option key={vendor} value={vendor}>{vendor}</option>)}
+              </select>
+              {(search || vendorFilter) && <button onClick={() => { setSearch(""); setVendorFilter(""); }}>Clear</button>}
+            </div>
 
-      {store && tab === "delivery" && (
-        <main className="dw-main">
-          {Object.keys(deliveryGroups).length === 0 && <div className="dw-empty">No delivery stops ready yet.</div>}
-          {Object.entries(deliveryGroups).map(([stopKey, stopOrders]) => {
-            const [businessName, address] = stopKey.split("||");
-            const allInTransit = stopOrders.every(order => normaliseStatus(order.status) === "In Transit");
-            const receiver = receiverByStop[stopKey] || {};
-            return (
-              <section className="dw-stop" key={stopKey}>
-                <div className="dw-stop-head">
-                  <div><h2>{businessName}</h2><p>{address}</p></div>
-                  <span>{stopOrders.length} package{stopOrders.length === 1 ? "" : "s"}</span>
-                </div>
-                {stopOrders.map(order => (
-                  <div className="dw-delivery-line" key={order.id}>
-                    <strong>{order.conNote}</strong><span>{order.vendor}</span><em>{order.pickupSummary || itemSummary(order.pickupItems || itemsByOrder[order.id] || {})}</em>
-                  </div>
-                ))}
-                {!allInTransit ? (
-                  <button className="dw-primary" disabled={saving} onClick={() => markInTransit(stopOrders)}>Start delivery to this stop</button>
-                ) : (
-                  <div className="dw-signoff">
-                    <label>Receiver name</label>
-                    <input value={receiver.name || ""} onChange={event => setReceiverByStop(previous => ({ ...previous, [stopKey]: { ...receiver, name: event.target.value } }))} />
-                    <label>Receiver phone</label>
-                    <input value={receiver.phone || ""} onChange={event => setReceiverByStop(previous => ({ ...previous, [stopKey]: { ...receiver, phone: event.target.value } }))} />
-                    <label>Signature for this delivery stop</label>
-                    <div className="dw-signature" onMouseDown={signature.start} onMouseMove={signature.move} onMouseUp={signature.end} onMouseLeave={signature.end} onTouchStart={signature.start} onTouchMove={signature.move} onTouchEnd={signature.end}>
-                      <canvas ref={signature.canvasRef} />
-                      <span>Sign here once for this delivery</span>
+            {Object.keys(pickupGroups).length === 0 && <div className="dw-empty">No pickup stops waiting right now.</div>}
+            {Object.entries(pickupGroups).map(([vendor, groupOrders]) => {
+              const firstOrder = groupOrders[0] || {};
+              return (
+                <section className="dw-vendor" key={vendor}>
+                  <h2>{vendor} Pickups ({groupOrders.length})</h2>
+                  <div className="dw-stop legacy pending">
+                    <div className="dw-stop-head legacy-head">
+                      <div>
+                        <h3>{vendor}</h3>
+                        <p><strong>Pickup:</strong> {pickupAddressFor(vendor, firstOrder)}</p>
+                      </div>
+                      <span>Pending</span>
                     </div>
-                    <div className="dw-actions">
-                      <button className="dw-secondary" type="button" onClick={signature.clear}>Clear signature</button>
-                      <button className="dw-primary" disabled={saving} onClick={() => completeDelivery(stopKey, stopOrders)}>Complete delivery stop</button>
-                    </div>
+
+                    {groupOrders.map(order => (
+                      <article className="dw-order legacy-order" key={order.id}>
+                        <div className="dw-order-top"><strong>{order.conNote}</strong><span>{submittedLabel(order)}</span></div>
+                        <small>{vendor}</small>
+                        <div className="dw-deliver-box">
+                          <b>Deliver to - Gold Coast</b>
+                          <strong>{order.businessName}</strong>
+                          <span>{order.dropLocation || "No address - update customer profile"}</span>
+                          {order.clientPhone && <span>{order.clientPhone}</span>}
+                        </div>
+                        {order.notes && <p className="dw-note">{order.notes}</p>}
+                        <PickupItems value={itemsByOrder[order.id] || defaultItems(order)} onChange={next => setItemsByOrder(previous => ({ ...previous, [order.id]: next }))} />
+                      </article>
+                    ))}
+
+                    <button className="dw-primary" disabled={saving} onClick={() => confirmPickup(vendor, groupOrders)}>Confirm pickup</button>
                   </div>
-                )}
-              </section>
-            );
-          })}
-        </main>
-      )}
+                </section>
+              );
+            })}
+          </>
+        )}
+
+        {store && tab === "delivery" && (
+          <>
+            {Object.keys(deliveryGroups).length === 0 && <div className="dw-empty">No delivery stops ready yet.</div>}
+            {Object.entries(deliveryGroups).map(([stopKey, stopOrders], index) => {
+              const [businessName, address] = stopKey.split("||");
+              const allInTransit = stopOrders.every(order => normaliseStatus(order.status) === "In Transit");
+              const receiver = receiverByStop[stopKey] || {};
+              const totalItems = stopOrders.map(order => order.pickupSummary || itemSummary(order.pickupItems || itemsByOrder[order.id] || {})).join("; ");
+              return (
+                <section className="dw-sign-card" key={stopKey}>
+                  <h2>Step {index + 1} - Delivery Stop</h2>
+                  <div className="dw-stop legacy enroute">
+                    <div className="dw-stop-head legacy-head">
+                      <div><h3>{businessName}</h3><p>{address}</p></div>
+                      <span>{allInTransit ? "En Route" : "Picked Up"}</span>
+                    </div>
+                    {stopOrders.map(order => (
+                      <div className="dw-delivery-line" key={order.id}>
+                        <strong>{order.conNote}</strong><span>{order.vendor}</span><em>{order.pickupSummary || itemSummary(order.pickupItems || itemsByOrder[order.id] || {})}</em>
+                      </div>
+                    ))}
+                    {!allInTransit ? (
+                      <button className="dw-green" disabled={saving} onClick={() => markInTransit(stopOrders)}>Start delivery to this stop</button>
+                    ) : (
+                      <div className="dw-signoff">
+                        <div className="dw-summary">
+                          <div><label>Client</label><strong>{businessName}</strong></div>
+                          <div><label>Deliver to</label><strong>{address}</strong></div>
+                          <div><label>Packages</label><strong>{totalItems}</strong></div>
+                        </div>
+                        <div className="dw-form-row">
+                          <div><label>Receiver name *</label><input value={receiver.name || ""} placeholder="Full name" onChange={event => setReceiverByStop(previous => ({ ...previous, [stopKey]: { ...receiver, name: event.target.value } }))} /></div>
+                          <div><label>Receiver phone</label><input value={receiver.phone || ""} placeholder="+61 4xx xxx xxx" onChange={event => setReceiverByStop(previous => ({ ...previous, [stopKey]: { ...receiver, phone: event.target.value } }))} /></div>
+                        </div>
+                        <label>Receiver signature *</label>
+                        <div className="dw-signature" onMouseDown={signature.start} onMouseMove={signature.move} onMouseUp={signature.end} onMouseLeave={signature.end} onTouchStart={signature.start} onTouchMove={signature.move} onTouchEnd={signature.end}>
+                          <canvas ref={signature.canvasRef} />
+                          <span>Sign here with mouse or finger</span>
+                        </div>
+                        <div className="dw-actions">
+                          <button className="dw-secondary" type="button" onClick={signature.clear}>Clear</button>
+                          <button className="dw-green" disabled={saving} onClick={() => completeDelivery(stopKey, stopOrders)}>Complete delivery and sign off</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </section>
+              );
+            })}
+          </>
+        )}
+      </main>
     </div>
   );
 }
 
 const styles = `
-.dw-shell{position:fixed;inset:0;z-index:9999;background:#f3f3e8;color:#1A1510;font-family:Barlow,Arial,sans-serif;overflow:auto}.dw-header{background:#e11d48;color:#f3f3e8;display:flex;align-items:flex-end;justify-content:space-between;gap:1rem;padding:1rem 1.25rem;box-shadow:0 3px 16px rgba(0,0,0,.2)}.dw-kicker{font-family:'Barlow Condensed',Arial,sans-serif;font-size:.75rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;opacity:.75}.dw-header h1{font-family:'Barlow Condensed',Arial,sans-serif;font-size:2.2rem;line-height:1;margin:0;text-transform:uppercase;letter-spacing:1px}.dw-header p{font-size:.8rem;margin:.2rem 0 0;opacity:.8}.dw-logout{border:1px solid rgba(243,243,232,.5);background:transparent;color:#f3f3e8;border-radius:2px;padding:.45rem .8rem;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:700;text-transform:uppercase;letter-spacing:1px;cursor:pointer}.dw-tabs{position:sticky;top:0;z-index:2;background:#fff;border-bottom:1px solid #d5cfc3;display:flex;gap:.35rem;padding:.55rem 1.25rem}.dw-tabs button{border:1px solid #d5cfc3;background:#ececdf;color:#1A1510;border-radius:2px;padding:.5rem .85rem;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;text-transform:uppercase;letter-spacing:1px;cursor:pointer}.dw-tabs button.active{background:#e11d48;border-color:#e11d48;color:#f3f3e8}.dw-main{max-width:980px;margin:0 auto;padding:1rem}.dw-message{max-width:980px;margin:.8rem auto 0;background:#fff;border:1px solid rgba(225,29,72,.25);border-left:4px solid #e11d48;border-radius:2px;padding:.75rem 1rem;font-size:.85rem;cursor:pointer}.dw-empty{background:#fff;border:1px solid #d5cfc3;border-radius:2px;margin:1rem auto;padding:2rem;max-width:980px;text-align:center;color:#7A6E60;font-style:italic}.dw-stop{background:#fff;border:1px solid #d5cfc3;border-left:4px solid #e11d48;border-radius:2px;margin-bottom:1rem;padding:1rem;box-shadow:0 1px 4px rgba(0,0,0,.05)}.dw-stop-head{display:flex;justify-content:space-between;gap:1rem;border-bottom:1px solid #ececdf;padding-bottom:.8rem;margin-bottom:.8rem}.dw-stop-head h2{font-family:'Barlow Condensed',Arial,sans-serif;font-size:1.45rem;line-height:1;text-transform:uppercase;margin:0;color:#e11d48;letter-spacing:.5px}.dw-stop-head p{font-size:.8rem;color:#7A6E60;margin:.25rem 0 0}.dw-stop-head span{align-self:flex-start;background:#ececdf;border:1px solid #d5cfc3;border-radius:2px;padding:.25rem .55rem;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;text-transform:uppercase;font-size:.75rem;white-space:nowrap}.dw-order{border:1px solid #ececdf;border-radius:2px;padding:.85rem;margin-bottom:.7rem;background:#fbfbf7}.dw-order-top{display:flex;justify-content:space-between;gap:.75rem;flex-wrap:wrap;margin-bottom:.2rem}.dw-order-top strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:1.05rem;text-transform:uppercase;color:#1A1510}.dw-order-top span{font-size:.8rem;color:#7A6E60}.dw-order p{font-size:.8rem;color:#7A6E60;margin:.2rem 0}.dw-note{color:#1A1510!important}.dw-items{display:grid;grid-template-columns:1fr 1fr;gap:.5rem;margin-top:.7rem}.dw-item{display:flex;align-items:center;justify-content:space-between;gap:.75rem;background:#fff;border:1px solid #d5cfc3;border-radius:2px;padding:.55rem .65rem;font-size:.82rem}.dw-stepper{display:flex;align-items:center;gap:.45rem}.dw-stepper button{width:30px;height:30px;border:1px solid #d5cfc3;background:#f3f3e8;color:#e11d48;border-radius:2px;font-weight:900;cursor:pointer}.dw-stepper span{min-width:22px;text-align:center;font-family:'Barlow Condensed',Arial,sans-serif;font-size:1.1rem;font-weight:900}.dw-primary,.dw-secondary{border:0;border-radius:2px;padding:.75rem 1rem;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:900;text-transform:uppercase;letter-spacing:1px;cursor:pointer}.dw-primary{background:#e11d48;color:#f3f3e8;width:100%}.dw-secondary{background:#ececdf;color:#1A1510;border:1px solid #d5cfc3}.dw-primary:disabled{opacity:.45;cursor:not-allowed}.dw-delivery-line{display:grid;grid-template-columns:140px 1fr 1.4fr;gap:.6rem;border-bottom:1px solid #ececdf;padding:.55rem 0;font-size:.82rem;align-items:center}.dw-delivery-line strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:1rem;text-transform:uppercase}.dw-delivery-line span{color:#7A6E60}.dw-delivery-line em{font-style:normal;color:#1A1510}.dw-signoff{border-top:1px solid #ececdf;margin-top:.8rem;padding-top:.8rem}.dw-signoff label{display:block;font-family:'Barlow Condensed',Arial,sans-serif;font-size:.75rem;font-weight:800;text-transform:uppercase;letter-spacing:1px;color:#7A6E60;margin:.6rem 0 .25rem}.dw-signoff input{width:100%;border:1px solid #d5cfc3;border-radius:2px;padding:.65rem;background:#fff;font-size:.9rem}.dw-signature{height:140px;border:2px dashed #c5bfb3;background:#fff;position:relative;border-radius:2px;overflow:hidden;touch-action:none}.dw-signature canvas{position:absolute;inset:0;width:100%;height:100%}.dw-signature span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#9A8E80;font-size:.82rem;pointer-events:none;font-style:italic}.dw-actions{display:flex;gap:.5rem;margin-top:.75rem}.dw-actions .dw-primary{width:auto;flex:1}.dw-actions .dw-secondary{flex:0 0 auto}@media(max-width:700px){.dw-header{align-items:flex-start}.dw-header h1{font-size:1.8rem}.dw-items{grid-template-columns:1fr}.dw-delivery-line{grid-template-columns:1fr}.dw-actions{flex-direction:column}.dw-actions .dw-primary{width:100%}}
+.dw-shell{position:fixed;inset:0;z-index:9999;background:#f3f3e8;color:#15110d;font-family:Barlow,Arial,sans-serif;overflow:auto}.dw-shell *{box-sizing:border-box}.dw-topbar{height:58px;background:#d70b3c;color:#f3f3e8;display:grid;grid-template-columns:220px 1fr 260px;align-items:center;gap:1rem;padding:0 22px;box-shadow:0 4px 18px rgba(0,0,0,.22);position:sticky;top:0;z-index:5}.dw-brand span,.dw-brand em,.dw-user span,.dw-titlebar p,.dw-stop-head p,.dw-order span,.dw-order small,.dw-summary label,.dw-signoff label{font-family:'Barlow Condensed',Arial,sans-serif}.dw-brand span{display:block;text-transform:uppercase;font-size:10px;letter-spacing:3px;line-height:1}.dw-brand strong{display:block;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:25px;line-height:.85;letter-spacing:1px}.dw-brand em{display:block;text-transform:uppercase;font-style:normal;font-size:10px;letter-spacing:2px;opacity:.65}.dw-nav{display:flex;justify-content:center;height:100%;align-items:center;gap:4px}.dw-nav button{height:38px;border:0;background:transparent;color:#f3f3e8;padding:0 15px;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:14px;font-weight:900;letter-spacing:.6px;cursor:pointer}.dw-nav button.active{background:rgba(255,255,255,.16);box-shadow:inset 0 -3px 0 #f3f3e8}.dw-user{justify-self:end;display:flex;align-items:center;gap:12px;text-transform:uppercase}.dw-user strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:13px;line-height:1}.dw-user span{font-size:11px;opacity:.75}.dw-user button{border:1px solid rgba(243,243,232,.45);background:transparent;color:#f3f3e8;height:32px;padding:0 12px;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:900;text-transform:uppercase;cursor:pointer}.dw-page{max-width:1180px;margin:0 auto;padding:32px 22px 60px}.dw-titlebar{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #cfc6b7;padding:0 0 18px;margin-bottom:18px}.dw-titlebar h1{font-family:'Barlow Condensed',Arial,sans-serif;font-size:39px;line-height:1;text-transform:uppercase;margin:0;letter-spacing:.5px}.dw-titlebar h1 span{color:#15110d}.dw-titlebar h1:not(:has(span)){color:#15110d}.dw-titlebar h1 span+text,.dw-titlebar h1{color:#d70b3c}.dw-titlebar p{margin:3px 0 0;color:#6e6459;font-size:15px}.dw-stats{display:flex;gap:10px}.dw-stats div{width:72px;height:62px;background:#fff;border:1px solid #cfc6b7;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.06)}.dw-stats strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:24px;color:#d70b3c;line-height:1}.dw-stats span{font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:12px;font-weight:900;color:#7a6f61}.dw-alert{background:#f7e1e4;border:1px solid #e8a4b2;color:#d70b3c;padding:12px 16px;margin:14px 0;font-size:14px}.dw-alert.soft{background:#f5dddd}.dw-empty{background:#fff;border:1px solid #cfc6b7;margin:18px 0;padding:36px;text-align:center;color:#7a6f61;font-style:italic}.dw-filters{display:grid;grid-template-columns:1fr 180px 74px;gap:12px;margin:14px 0 20px}.dw-filters input,.dw-filters select{height:38px;border:1px solid #cfc6b7;background:#fff;padding:0 13px;font-size:15px}.dw-filters input:focus,.dw-filters select:focus,.dw-signoff input:focus{outline:1px solid #d70b3c;border-color:#d70b3c}.dw-filters button{border:1px solid #cfc6b7;background:#e9e2d5;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:900;text-transform:uppercase;cursor:pointer}.dw-vendor h2,.dw-sign-card h2{font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;letter-spacing:3px;font-size:14px;color:#d70b3c;margin:18px 0 10px}.dw-stop.legacy{background:#fff;border:1px solid #cfc6b7;border-left:5px solid #d70b3c;padding:20px 22px;margin-bottom:12px;box-shadow:0 2px 6px rgba(0,0,0,.05)}.dw-stop.legacy.enroute{border-left-color:#19733a}.legacy-head{display:flex;justify-content:space-between;gap:1rem;margin-bottom:12px}.legacy-head h3{font-family:'Barlow Condensed',Arial,sans-serif;font-size:26px;text-transform:uppercase;margin:0;line-height:1;letter-spacing:.6px}.legacy-head p{margin:6px 0 0;color:#6d6257;font-size:15px}.legacy-head span{height:24px;border:1px solid #f0a0ae;background:#fff4f6;color:#d70b3c;padding:4px 9px;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:900;font-size:12px;text-transform:uppercase;letter-spacing:.8px}.enroute .legacy-head span{border-color:#9fc7aa;background:#f2fbf3;color:#19733a}.legacy-order{border-top:1px solid #e4ddd0;padding-top:14px;margin-top:14px}.dw-order-top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.dw-order-top strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:22px;text-transform:uppercase;line-height:1}.dw-order-top span{font-size:14px;color:#7a6f61}.legacy-order small{display:block;text-transform:uppercase;letter-spacing:1px;color:#7a6f61;font-size:12px;margin:2px 0 8px}.dw-deliver-box{background:#e9e2d5;border:1px solid #cfc6b7;border-left:4px solid #d70b3c;padding:11px 14px;margin:10px 0 12px;display:flex;flex-direction:column;gap:2px}.dw-deliver-box b{font-family:'Barlow Condensed',Arial,sans-serif;color:#d70b3c;text-transform:uppercase;letter-spacing:2px;font-size:12px}.dw-deliver-box strong{font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:20px}.dw-deliver-box span{font-size:14px}.dw-note{font-size:14px;margin:0 0 10px;color:#6d6257}.dw-items{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0}.dw-item{background:#f3f0e8;border:1px solid #cfc6b7;padding:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px}.dw-stepper{display:flex;align-items:center;gap:8px}.dw-stepper button{width:28px;height:28px;border:1px solid #cfc6b7;background:#fff;color:#d70b3c;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:900;font-size:17px;cursor:pointer}.dw-stepper button:disabled{opacity:.35}.dw-stepper span{min-width:20px;text-align:center;font-family:'Barlow Condensed',Arial,sans-serif;font-size:20px;font-weight:900}.dw-primary,.dw-green,.dw-secondary{border:0;padding:10px 18px;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:15px;font-weight:900;letter-spacing:.5px;cursor:pointer}.dw-primary{background:#d70b3c;color:#f3f3e8}.dw-green{background:#19733a;color:#f3f3e8}.dw-secondary{background:#e9e2d5;color:#5b5146;border:1px solid #cfc6b7}.dw-primary:disabled,.dw-green:disabled{opacity:.5;cursor:not-allowed}.dw-sign-card{background:#fff;border:1px solid #cfc6b7;margin-bottom:18px;padding:20px}.dw-delivery-line{display:grid;grid-template-columns:160px 1fr 1.5fr;gap:14px;border-top:1px solid #e4ddd0;padding:12px 0;font-size:14px;align-items:center}.dw-delivery-line strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:18px;text-transform:uppercase}.dw-delivery-line span{color:#7a6f61}.dw-delivery-line em{font-style:normal}.dw-signoff{background:#e9e2d5;border:1px solid #cfc6b7;margin-top:14px;padding:16px}.dw-summary{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;border-bottom:1px solid #cfc6b7;padding-bottom:12px;margin-bottom:12px}.dw-summary label,.dw-signoff label{display:block;text-transform:uppercase;letter-spacing:1px;font-size:12px;color:#7a6f61;font-weight:900;margin-bottom:4px}.dw-summary strong{font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:18px}.dw-form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}.dw-signoff input{width:100%;height:44px;border:1px solid #cfc6b7;background:#fff;padding:0 14px;font-size:15px}.dw-signature{height:132px;border:2px dashed #c5bfb3;background:#fff;position:relative;overflow:hidden;touch-action:none;margin-top:6px}.dw-signature canvas{position:absolute;inset:0;width:100%;height:100%}.dw-signature span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#9a8e80;font-size:14px;pointer-events:none;font-style:italic}.dw-actions{display:flex;gap:10px;margin-top:12px}.dw-actions .dw-green{flex:1}@media(max-width:760px){.dw-topbar{height:auto;grid-template-columns:1fr;padding:12px 16px}.dw-nav{justify-content:flex-start;overflow:auto}.dw-user{justify-self:start}.dw-page{padding:22px 14px 44px}.dw-titlebar{align-items:flex-start;gap:14px}.dw-titlebar h1{font-size:32px}.dw-stats div{width:58px;height:54px}.dw-filters{grid-template-columns:1fr}.dw-items{grid-template-columns:1fr}.dw-delivery-line,.dw-summary,.dw-form-row{grid-template-columns:1fr}.dw-stop.legacy{padding:16px}.legacy-head{flex-direction:column}.dw-actions{flex-direction:column}}
 `;
