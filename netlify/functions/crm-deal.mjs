@@ -73,7 +73,9 @@ function dealStage(key) {
 }
 
 function dealPipeline() {
-  return normalise(process.env.ZOHO_DEAL_PIPELINE_ID) || process.env.ZOHO_DEAL_PIPELINE || 'Couriers';
+  const pipelineId = normalise(process.env.ZOHO_DEAL_PIPELINE_ID);
+  if (/^\d+$/.test(pipelineId)) return pipelineId;
+  return process.env.ZOHO_DEAL_PIPELINE || pipelineId || 'Couriers';
 }
 
 function dealPipelineLabel() {
@@ -236,14 +238,16 @@ function preferredWindow(order = {}) {
   return [order.preferredDate, order.preferredTime].filter(Boolean).join(' ') || order.submittedAt || 'Not supplied';
 }
 
-function pickupTiming(order = {}) {
-  const raw = normalise(order.pickupTiming || order.pickup_timing || order.urgency).toLowerCase();
-  return raw === 'future-date' || raw === 'future date' || raw === 'asap' ? 'Future Date' : 'Next Run';
+function requestedPickupDate(order = {}) {
+  return normalise(order.requestedPickupDate || order.milkRunDate || order.preferredDate);
 }
 
-function requestedPickupDate(order = {}) {
-  if (pickupTiming(order) !== 'Future Date') return '';
-  return normalise(order.requestedPickupDate || order.preferredDate);
+function requestedPickupDateTime(order = {}) {
+  const date = requestedPickupDate(order);
+  if (!date) return '';
+  if (/T\d{2}:\d{2}/.test(date)) return date;
+  const time = normalise(order.requestedPickupTime || order.preferredTime) || '09:00';
+  return `${date}T${time.length === 5 ? `${time}:00` : time}+10:00`;
 }
 
 function dealName(order = {}) {
@@ -290,8 +294,7 @@ function dealDescription(order = {}) {
     `Quoted total: ${amount ? `$${amount.toFixed(2)} GST inclusive` : 'Not supplied'}`,
     '',
     'Run details',
-    `Pickup timing: ${pickupTiming(order)}`,
-    `Requested pickup date: ${pickupDate || (pickupTiming(order) === 'Future Date' ? 'Not supplied' : 'Next scheduled run')}`,
+    `Milk run date: ${pickupDate || 'Not supplied'}`,
     `Preferred window: ${preferredWindow(order)}`,
     `Submitted at: ${order.submittedAt || new Date().toISOString()}`,
     order.notes ? `Driver notes: ${order.notes}` : 'Driver notes: None',
@@ -305,6 +308,7 @@ function customField(fieldKey, value) {
 
 function optionalCustomFields(order = {}) {
   const vendor = vendorDetails(order);
+  const deliveryNotes = order.notes || order.deliveryNotes;
   return {
     ...customField('CON_NOTE', order.conNote),
     ...customField('PORTAL_ORDER_ID', order.id),
@@ -313,9 +317,8 @@ function optionalCustomFields(order = {}) {
     ...customField('DROP_ADDRESS', order.dropLocation || order.deliveryAddress),
     ...customField('ITEM_SUMMARY', itemSummary(order)),
     ...customField('TYRE_QTY', numberOrBlank(order.tyreQty || order.tyres || order.tyreCount) || undefined),
-    ...customField('URGENCY', pickupTiming(order)),
-    ...customField('PICKUP_TIMING', pickupTiming(order)),
-    ...customField('REQUESTED_PICKUP_DATE', requestedPickupDate(order) || undefined),
+    ...customField('REQUESTED_PICKUP_DATE', requestedPickupDateTime(order) || undefined),
+    ...customField('DELIVERY_NOTES', deliveryNotes || undefined),
     ...customField('PREFERRED_WINDOW', preferredWindow(order)),
   };
 }
