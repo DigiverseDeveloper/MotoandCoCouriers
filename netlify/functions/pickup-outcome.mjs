@@ -2,6 +2,19 @@ const zohoAccountsUrl = (process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho
 const zohoApiDomain = (process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com.au').replace(/\/$/, '');
 const zohoCrmVersion = process.env.ZOHO_CRM_VERSION || 'v8';
 const tokenCache = new Map();
+const productCache = new Map();
+
+const TYRE_ITEM_RULES = [
+  { minQty: 1, maxQty: 1, sku: 'MCO-COU-01', envName: 'ZOHO_CRM_PRODUCT_TYRE_1_BUNDLE_ID', label: 'COURIERS - Tyre 1 Bundle', defaultRate: 16.8, lineQty: tyreQty => tyreQty },
+  { minQty: 2, maxQty: 2, sku: 'MCO-COU-02', envName: 'ZOHO_CRM_PRODUCT_TYRE_2_BUNDLE_ID', label: 'COURIERS - Tyre 2 Bundle', defaultRate: 21.6, lineQty: () => 1 },
+  { minQty: 3, maxQty: Infinity, sku: 'MCO-COU-03', envName: 'ZOHO_CRM_PRODUCT_TYRE_3_PLUS_BUNDLE_ID', label: 'COURIERS - Tyre 3+ Bundle', defaultRate: 11.2, lineQty: tyreQty => tyreQty },
+];
+
+const PART_ITEM_RULES = [
+  { key: 'upTo5kg', sku: 'MCO-COU-04', envName: 'ZOHO_CRM_PRODUCT_UP_TO_5KG_ID', label: 'COURIERS - Up to 5kg', defaultRate: 15.6 },
+  { key: 'fiveTo10kg', sku: 'MCO-COU-05', envName: 'ZOHO_CRM_PRODUCT_5_TO_10KG_ID', label: 'COURIERS - 5-10kg', defaultRate: 19.2 },
+  { key: 'returns', sku: process.env.ZOHO_CRM_PRODUCT_RETURNS_SKU || '', envName: 'ZOHO_CRM_PRODUCT_RETURNS_ID', label: 'COURIERS - Returns to supplier', defaultRate: 6 },
+];
 
 function response(statusCode, body) {
   return {
@@ -23,6 +36,24 @@ function compact(value) {
 function parseBody(event) {
   if (!event.body) return {};
   return JSON.parse(event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body);
+}
+
+function normalise(value) {
+  return String(value || '').trim();
+}
+
+function normaliseKey(value) {
+  return normalise(value).toLowerCase();
+}
+
+function quantity(value) {
+  const amount = Number(value || 0);
+  return Number.isFinite(amount) && amount > 0 ? amount : 0;
+}
+
+function money(value) {
+  const amount = Number(value || 0);
+  return Number.isFinite(amount) ? amount : 0;
 }
 
 function dealStage(key) {
@@ -70,6 +101,15 @@ function pickupFields({ outcome, actualPickupAt, pickupNotes, requestedPickupDat
     [notesField]: pickupNotes,
     [runDateField]: requestedPickupDate || undefined,
   });
+}
+
+function subformFieldNames() {
+  return {
+    subform: process.env.ZOHO_DEAL_SUBFORM_PICKUP_ITEMS || 'Job_Builder',
+    product: process.env.ZOHO_DEAL_SUBFORM_PRODUCT || 'Product',
+    rate: process.env.ZOHO_DEAL_SUBFORM_RATE || 'RR_Price',
+    qty: process.env.ZOHO_DEAL_SUBFORM_QTY || 'Qty',
+  };
 }
 
 async function accessTokenForCrm() {
@@ -126,14 +166,104 @@ async function zohoRequest({ path, token, method = 'GET', body }) {
   return data;
 }
 
-async function updatePickupOutcome({ dealId, stageKey, outcome, actualPickupAt, pickupNotes, requestedPickupDate }) {
+function productIdFromEnv(rule) {
+  return normalise(process.env[rule.envName]);
+}
+
+function productRate(product, fallbackRate) {
+  return money(product?.Unit_Price || product?.unit_price || product?.Price || fallbackRate || 0);
+}
+
+async function searchProductByCriteria({ token, field, value }) {
+  if (!value) return null;
+  try {
+    const data = await zohoRequest({
+      token,
+      path: `/crm/${zohoCrmVersion}/Products/search?criteria=${encodeURIComponent(`(${field}:equals:${value})`)}`,
+    });
+    return (data.data || [])[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveCrmProduct({ token, rule }) {
+  const envId = productIdFromEnv(rule);
+  if (envId) return { id: envId, name: rule.label, rate: rule.defaultRate, source: 'env' };
+
+  const cacheKey = `${rule.sku || ''}:${rule.label}`;
+  if (productCache.has(cacheKey)) return productCache.get(cacheKey);
+
+  const product = await searchProductByCriteria({ token, field: 'Product_Code', value: rule.sku })
+    || await searchProductByCriteria({ token, field: 'Product_Name', value: rule.label });
+
+  if (!product?.id) {
+    throw new Error(`Could not find CRM Product for ${rule.sku || rule.label}. Add it to Zoho CRM Products or set ${rule.envName} in Netlify.`);
+  }
+
+  const resolved = { id: product.id, name: product.Product_Name || rule.label, rate: productRate(product, rule.defaultRate), source: 'crm' };
+  productCache.set(cacheKey, resolved);
+  return resolved;
+}
+
+function selectedTyreRule(tyreQty) {
+  return TYRE_ITEM_RULES.find(rule => tyreQty >= rule.minQty && tyreQty <= rule.maxQty) || null;
+}
+
+function pickupItemsFromPayload(pickupItems = {}) {
+  return {
+    tyres: quantity(pickupItems.tyres || pickupItems.tyreQty || pickupItems.tyreCount),
+    upTo5kg: quantity(pickupItems.upTo5kg || pickupItems.p1),
+    fiveTo10kg: quantity(pickupItems.fiveTo10kg || pickupItems.p2),
+    returns: quantity(pickupItems.returns || pickupItems.returnsQty),
+  };
+}
+
+async function addSubformRow({ token, rows, rule, qty }) {
+  if (!qty) return 0;
+  const fields = subformFieldNames();
+  const product = await resolveCrmProduct({ token, rule });
+  const rate = money(product.rate || rule.defaultRate);
+  rows.push(compact({
+    [fields.product]: { id: product.id },
+    [fields.rate]: rate,
+    [fields.qty]: qty,
+  }));
+  return rate * qty;
+}
+
+async function pickupItemSubform({ token, pickupItems }) {
+  const items = pickupItemsFromPayload(pickupItems);
+  const rows = [];
+  let total = 0;
+
+  const tyreQty = items.tyres;
+  if (tyreQty) {
+    const rule = selectedTyreRule(tyreQty);
+    if (rule) total += await addSubformRow({ token, rows, rule, qty: rule.lineQty(tyreQty) });
+  }
+
+  for (const rule of PART_ITEM_RULES) {
+    total += await addSubformRow({ token, rows, rule, qty: items[rule.key] });
+  }
+
+  return { rows, total };
+}
+
+async function updatePickupOutcome({ dealId, stageKey, outcome, actualPickupAt, pickupNotes, requestedPickupDate, pickupItems }) {
   const token = await accessTokenForCrm();
   if (!token) throw new Error('Zoho CRM credentials are missing.');
   if (!dealId) throw new Error('Zoho Deal ID is missing.');
 
+  const itemData = pickupItems ? await pickupItemSubform({ token, pickupItems }) : { rows: [], total: 0 };
+  const fields = subformFieldNames();
+  const hasItemRows = itemData.rows.length > 0;
+
   const payload = compact({
     Stage: stageKey ? dealStage(stageKey) : undefined,
     Pipeline: stageKey ? dealPipeline() : undefined,
+    Amount: hasItemRows ? itemData.total : undefined,
+    [fields.subform]: hasItemRows ? itemData.rows : undefined,
     ...pickupFields({ outcome, actualPickupAt, pickupNotes, requestedPickupDate }),
   });
 
@@ -144,7 +274,16 @@ async function updatePickupOutcome({ dealId, stageKey, outcome, actualPickupAt, 
     body: { data: [payload] },
   });
 
-  return { success: true, mode: 'live', dealId, outcome, requestedPickupDate, message: 'Pickup outcome updated in Zoho CRM.' };
+  return {
+    success: true,
+    mode: 'live',
+    dealId,
+    outcome,
+    requestedPickupDate,
+    itemRows: itemData.rows.length,
+    total: itemData.total,
+    message: hasItemRows ? 'Pickup outcome and item rows updated in Zoho CRM.' : 'Pickup outcome updated in Zoho CRM.',
+  };
 }
 
 export async function handler(event) {
