@@ -6,7 +6,7 @@ const zohoCrmVersion = process.env.ZOHO_CRM_VERSION || 'v8';
 const zeptoMailApiUrl = process.env.ZEPTO_MAIL_API_URL || 'https://api.zeptomail.com/v1.1/email';
 const tokenCache = new Map();
 const sessionCookieName = 'motoco_session';
-const sessionMaxAgeSeconds = 8 * 60 * 60;
+const sessionMaxAgeSeconds = Number(process.env.SESSION_MAX_AGE_DAYS || 60) * 24 * 60 * 60;
 const codeWindowMs = 10 * 60 * 1000;
 
 const staffUsers = [
