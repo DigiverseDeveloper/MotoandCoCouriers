@@ -7,6 +7,10 @@ function textOf(element) {
   return String(element?.textContent || "").trim();
 }
 
+function looseKey(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
 function isDriverScreen() {
   return document.querySelector(".dw-shell") && document.querySelector(".rpill")?.textContent?.trim()?.toLowerCase() === "driver";
 }
@@ -46,8 +50,23 @@ function normaliseStatus(status) {
 
 function findOrderFromCard(card, orders) {
   const conNote = textOf(card?.querySelector?.(".dw-order-top strong"));
-  if (!conNote) return null;
-  return orders.find(order => String(order.conNote || "").trim() === conNote) || null;
+  const vendor = textOf(card?.querySelector?.("small"));
+  const businessName = textOf(card?.querySelector?.(".dw-deliver-box strong"));
+  const exactConNote = orders.find(order => conNote && String(order.conNote || "").trim() === conNote);
+  if (exactConNote) return exactConNote;
+
+  const cardBusiness = looseKey(businessName);
+  const cardVendor = looseKey(vendor);
+  return orders.find(order => {
+    const orderBusiness = looseKey(order.businessName || order.clientName || order.accountName);
+    const orderVendor = looseKey(order.vendor);
+    return cardBusiness && orderBusiness === cardBusiness && (!cardVendor || !orderVendor || orderVendor === cardVendor);
+  }) || orders.find(order => {
+    const cardIdentifier = looseKey(conNote);
+    return cardIdentifier && [order.portalOrderId, order.id, order.workItemId, order.businessName, order.clientName]
+      .map(looseKey)
+      .some(value => value && value === cardIdentifier);
+  }) || null;
 }
 
 function pickupItemsFromCard(card) {
