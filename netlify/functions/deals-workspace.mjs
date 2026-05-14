@@ -164,6 +164,7 @@ async function contactByEmail(token, email) {
 
 async function fetchDeals(token) {
   const fieldSets = [
+    'Deal_Name,Stage,Pipeline,Closing_Date,Amount,Account_Name,Contact_Name,Description,Created_Time,Modified_Time,Pickup_Supplier,Vendor_Pick_Up,Con_Note_Number,Delivery_Notes,Milk_Run_Date,Work_Item_ID,Scheduled_Date_Time',
     'Deal_Name,Stage,Pipeline,Closing_Date,Amount,Account_Name,Contact_Name,Description,Created_Time,Modified_Time,Vendor_Pick_Up,Con_Note_Number,Delivery_Notes,Milk_Run_Date,Work_Item_ID,Scheduled_Date_Time',
     'Deal_Name,Stage,Pipeline,Closing_Date,Amount,Account_Name,Contact_Name,Description,Created_Time,Modified_Time',
     'Deal_Name,Stage,Closing_Date,Amount,Account_Name,Contact_Name,Description,Created_Time,Modified_Time',
@@ -203,7 +204,7 @@ function dealToOrder(deal, clientEmail = '') {
   const accountName = deal.Account_Name?.name || '';
   const contactName = deal.Contact_Name?.name || '';
   const conNote = firstValue(deal.Con_Note_Number, descriptionField(description, 'Con note'), deal.Deal_Name?.split(' - ').at(-1), deal.id);
-  const vendor = firstValue(lookupName(deal.Vendor_Pick_Up), descriptionField(description, 'Supplier'), descriptionField(description, 'Pickup supplier'), 'Supplier');
+  const vendor = firstValue(deal.Pickup_Supplier, lookupName(deal.Vendor_Pick_Up), descriptionField(description, 'Supplier'), descriptionField(description, 'Pickup supplier'), 'Supplier');
   const pickupAddress = firstValue(descriptionField(description, 'Pickup address'), descriptionField(description, 'Supplier address'));
   const dropAddress = firstValue(descriptionField(description, 'Drop address'), descriptionField(description, 'Delivery address'));
   const milkRunDate = firstValue(deal.Milk_Run_Date, descriptionField(description, 'Milk run date'));
