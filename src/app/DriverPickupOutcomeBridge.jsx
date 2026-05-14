@@ -50,6 +50,19 @@ function findOrderFromCard(card, orders) {
   return orders.find(order => String(order.conNote || "").trim() === conNote) || null;
 }
 
+function pickupItemsFromCard(card) {
+  const items = { tyres: 0, upTo5kg: 0, fiveTo10kg: 0, returns: 0 };
+  card?.querySelectorAll?.(".dw-item")?.forEach(row => {
+    const label = textOf(row.querySelector("div")).toLowerCase();
+    const qty = Number(textOf(row.querySelector(".dw-stepper span")) || 0) || 0;
+    if (label.includes("tyre")) items.tyres = qty;
+    else if (label.includes("up to 5")) items.upTo5kg = qty;
+    else if (label.includes("5-10") || label.includes("5–10")) items.fiveTo10kg = qty;
+    else if (label.includes("return")) items.returns = qty;
+  });
+  return items;
+}
+
 async function apiJSON(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -67,7 +80,7 @@ async function pullZohoOrders() {
   return Array.isArray(body.orders) ? body.orders : [];
 }
 
-async function updatePickupOutcome(order, { outcome, stageKey, requestedPickupDate, notes }) {
+async function updatePickupOutcome(order, { outcome, stageKey, requestedPickupDate, notes, pickupItems }) {
   if (!order?.zohoDealId) throw new Error("This pickup does not have a Zoho Deal ID yet.");
   const actualPickupAt = new Date().toISOString();
   return fetch("/.netlify/functions/pickup-outcome", {
@@ -80,6 +93,7 @@ async function updatePickupOutcome(order, { outcome, stageKey, requestedPickupDa
       actualPickupAt,
       requestedPickupDate,
       pickupNotes: notes,
+      pickupItems,
     }),
   }).then(async response => {
     const body = await response.json().catch(() => ({}));
@@ -188,9 +202,15 @@ export default function DriverPickupOutcomeBridge() {
       if (!order) return;
 
       if (text === "confirm this pickup") {
+        const pickupItems = pickupItemsFromCard(card);
         setTimeout(() => {
-          updatePickupOutcome(order, { outcome: "Picked Up", stageKey: "PICKED_UP", notes: "Driver confirmed pickup in app." })
-            .then(() => setMessage(`${order.conNote} pickup date and outcome saved to Zoho.`))
+          updatePickupOutcome(order, {
+            outcome: "Picked Up",
+            stageKey: "PICKED_UP",
+            notes: "Driver confirmed pickup in app.",
+            pickupItems,
+          })
+            .then(result => setMessage(`${order.conNote} pickup saved to Zoho with ${result.itemRows || 0} item row${result.itemRows === 1 ? "" : "s"}.`))
             .catch(error => setMessage(error.message));
         }, 250);
       }
