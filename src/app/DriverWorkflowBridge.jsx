@@ -41,11 +41,23 @@ function groupBy(items, getKey) {
 
 function mergeOrders(localOrders = [], zohoOrders = []) {
   const byKey = new Map();
-  [...localOrders, ...zohoOrders].forEach(order => {
+  for (const order of localOrders) {
     const key = String(order?.id || order?.zohoDealId || order?.conNote || "");
-    if (!key) return;
-    byKey.set(key, { ...(byKey.get(key) || {}), ...order });
-  });
+    if (key) byKey.set(key, order);
+  }
+  for (const order of zohoOrders) {
+    const key = String(order?.id || order?.zohoDealId || order?.conNote || "");
+    if (!key) continue;
+    const local = byKey.get(key) || {};
+    const merged = { ...local, ...order };
+    if (local.status && normaliseStatus(local.status) !== "Order Placed" && normaliseStatus(order.status) === "Order Placed") {
+      merged.status = local.status;
+    }
+    if (local.pickupItems) merged.pickupItems = local.pickupItems;
+    if (local.pickupSummary) merged.pickupSummary = local.pickupSummary;
+    if (local.noPickupAt) merged.noPickupAt = local.noPickupAt;
+    byKey.set(key, merged);
+  }
   return [...byKey.values()];
 }
 
@@ -274,6 +286,7 @@ export default function DriverWorkflowBridge() {
 
   const orders = store?.orders || [];
   const pickupOrders = orders.filter(order => normaliseStatus(order.status) === "Order Placed");
+  const noPickupOrders = orders.filter(order => normaliseStatus(order.status) === "No Pickup");
   const deliveryOrders = orders.filter(order => ["Picked Up", "In Transit"].includes(normaliseStatus(order.status)));
   const vendors = useMemo(() => [...new Set(pickupOrders.map(order => order.vendor || "Unknown vendor"))].sort(), [pickupOrders]);
   const visiblePickupOrders = pickupOrders.filter(order => includesSearch(order, search) && (!vendorFilter || order.vendor === vendorFilter));
@@ -286,21 +299,43 @@ export default function DriverWorkflowBridge() {
     await apiJSON("/snapshot", { method: "PUT", body: JSON.stringify({ store: nextStore }) });
   }
 
-  async function confirmPickup(vendor, groupOrders) {
-    if (groupOrders.some(order => !hasAnyItems(itemsByOrder[order.id] || {}))) {
-      setMessage("Add at least one item quantity for each pickup before checking off the stop.");
+  async function updateOneOrder(orderId, changes) {
+    const nextOrders = orders.map(order => order.id === orderId ? { ...order, ...changes } : order);
+    await saveStore({ ...store, orders: nextOrders });
+  }
+
+  async function confirmOrderPickup(order) {
+    const pickupItems = itemsByOrder[order.id] || {};
+    if (!hasAnyItems(pickupItems)) {
+      setMessage("Add at least one item quantity before confirming this customer pickup.");
       return;
     }
     setSaving(true);
-    const nextOrders = orders.map(order => {
-      if (!groupOrders.some(item => item.id === order.id)) return order;
-      const pickupItems = itemsByOrder[order.id] || {};
-      return { ...order, status: "Picked Up", pickupItems, pickupSummary: itemSummary(pickupItems), driverName: driver?.name || "Driver" };
+    await updateOneOrder(order.id, {
+      status: "Picked Up",
+      pickupItems,
+      pickupSummary: itemSummary(pickupItems),
+      pickedUpAt: new Date().toISOString(),
+      driverName: driver?.name || "Driver",
     });
-    await saveStore({ ...store, orders: nextOrders });
-    await Promise.all(groupOrders.map(order => pushStage(order, "PICKED_UP")));
+    await pushStage(order, "PICKED_UP");
     setSaving(false);
-    setMessage(`${vendor} checked off. Items are now ready for delivery.`);
+    setMessage(`${order.conNote || order.businessName} confirmed as picked up.`);
+    await refresh();
+  }
+
+  async function markNoPickup(order) {
+    setSaving(true);
+    await updateOneOrder(order.id, {
+      status: "No Pickup",
+      pickupItems: {},
+      pickupSummary: "No pickup",
+      noPickupAt: new Date().toISOString(),
+      noPickupReason: "No goods available at pickup",
+      driverName: driver?.name || "Driver",
+    });
+    setSaving(false);
+    setMessage(`${order.conNote || order.businessName} marked as no pickup.`);
     await refresh();
   }
 
@@ -385,6 +420,7 @@ export default function DriverWorkflowBridge() {
           <div className="dw-stats">
             <div><strong>{pickupOrders.length}</strong><span>Pickup</span></div>
             <div><strong>{deliveryOrders.length}</strong><span>En Route</span></div>
+            <div><strong>{noPickupOrders.length}</strong><span>No Pickup</span></div>
           </div>
         </section>
 
@@ -393,7 +429,7 @@ export default function DriverWorkflowBridge() {
 
         {store && tab === "milk-run" && (
           <>
-            {pickupOrders.length > 0 && <div className="dw-alert soft">{pickupOrders.length} pickup order{pickupOrders.length === 1 ? "" : "s"} ready for today's run.</div>}
+            {pickupOrders.length > 0 && <div className="dw-alert soft">Confirm each customer pickup separately. Use No Pickup if nothing was available for that customer.</div>}
             <div className="dw-filters">
               <input value={search} onChange={event => setSearch(event.target.value)} placeholder="Search client, con note or workshop..." />
               <select value={vendorFilter} onChange={event => setVendorFilter(event.target.value)}>
@@ -430,10 +466,12 @@ export default function DriverWorkflowBridge() {
                         </div>
                         {order.notes && <p className="dw-note">{order.notes}</p>}
                         <PickupItems value={itemsByOrder[order.id] || defaultItems(order)} onChange={next => setItemsByOrder(previous => ({ ...previous, [order.id]: next }))} />
+                        <div className="dw-order-actions">
+                          <button className="dw-primary" disabled={saving} onClick={() => confirmOrderPickup(order)}>Confirm this pickup</button>
+                          <button className="dw-no" disabled={saving} onClick={() => markNoPickup(order)}>No pickup</button>
+                        </div>
                       </article>
                     ))}
-
-                    <button className="dw-primary" disabled={saving} onClick={() => confirmPickup(vendor, groupOrders)}>Confirm pickup</button>
                   </div>
                 </section>
               );
@@ -498,5 +536,5 @@ export default function DriverWorkflowBridge() {
 }
 
 const styles = `
-.dw-shell{position:fixed;inset:0;z-index:9999;background:#f3f3e8;color:#15110d;font-family:Barlow,Arial,sans-serif;overflow:auto}.dw-shell *{box-sizing:border-box}.dw-topbar{height:58px;background:#d70b3c;color:#f3f3e8;display:grid;grid-template-columns:220px 1fr 260px;align-items:center;gap:1rem;padding:0 22px;box-shadow:0 4px 18px rgba(0,0,0,.22);position:sticky;top:0;z-index:5}.dw-brand span,.dw-brand em,.dw-user span,.dw-titlebar p,.dw-stop-head p,.dw-order span,.dw-order small,.dw-summary label,.dw-signoff label{font-family:'Barlow Condensed',Arial,sans-serif}.dw-brand span{display:block;text-transform:uppercase;font-size:10px;letter-spacing:3px;line-height:1}.dw-brand strong{display:block;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:25px;line-height:.85;letter-spacing:1px}.dw-brand em{display:block;text-transform:uppercase;font-style:normal;font-size:10px;letter-spacing:2px;opacity:.65}.dw-nav{display:flex;justify-content:center;height:100%;align-items:center;gap:4px}.dw-nav button{height:38px;border:0;background:transparent;color:#f3f3e8;padding:0 15px;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:14px;font-weight:900;letter-spacing:.6px;cursor:pointer}.dw-nav button.active{background:rgba(255,255,255,.16);box-shadow:inset 0 -3px 0 #f3f3e8}.dw-user{justify-self:end;display:flex;align-items:center;gap:12px;text-transform:uppercase}.dw-user strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:13px;line-height:1}.dw-user span{font-size:11px;opacity:.75}.dw-user button{border:1px solid rgba(243,243,232,.45);background:transparent;color:#f3f3e8;height:32px;padding:0 12px;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:900;text-transform:uppercase;cursor:pointer}.dw-page{max-width:1180px;margin:0 auto;padding:32px 22px 60px}.dw-titlebar{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #cfc6b7;padding:0 0 18px;margin-bottom:18px}.dw-titlebar h1{font-family:'Barlow Condensed',Arial,sans-serif;font-size:39px;line-height:1;text-transform:uppercase;margin:0;letter-spacing:.5px}.dw-titlebar h1 span{color:#15110d}.dw-titlebar h1:not(:has(span)){color:#15110d}.dw-titlebar h1 span+text,.dw-titlebar h1{color:#d70b3c}.dw-titlebar p{margin:3px 0 0;color:#6e6459;font-size:15px}.dw-stats{display:flex;gap:10px}.dw-stats div{width:72px;height:62px;background:#fff;border:1px solid #cfc6b7;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.06)}.dw-stats strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:24px;color:#d70b3c;line-height:1}.dw-stats span{font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:12px;font-weight:900;color:#7a6f61}.dw-alert{background:#f7e1e4;border:1px solid #e8a4b2;color:#d70b3c;padding:12px 16px;margin:14px 0;font-size:14px}.dw-alert.soft{background:#f5dddd}.dw-empty{background:#fff;border:1px solid #cfc6b7;margin:18px 0;padding:36px;text-align:center;color:#7a6f61;font-style:italic}.dw-filters{display:grid;grid-template-columns:1fr 180px 74px;gap:12px;margin:14px 0 20px}.dw-filters input,.dw-filters select{height:38px;border:1px solid #cfc6b7;background:#fff;padding:0 13px;font-size:15px}.dw-filters input:focus,.dw-filters select:focus,.dw-signoff input:focus{outline:1px solid #d70b3c;border-color:#d70b3c}.dw-filters button{border:1px solid #cfc6b7;background:#e9e2d5;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:900;text-transform:uppercase;cursor:pointer}.dw-vendor h2,.dw-sign-card h2{font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;letter-spacing:3px;font-size:14px;color:#d70b3c;margin:18px 0 10px}.dw-stop.legacy{background:#fff;border:1px solid #cfc6b7;border-left:5px solid #d70b3c;padding:20px 22px;margin-bottom:12px;box-shadow:0 2px 6px rgba(0,0,0,.05)}.dw-stop.legacy.enroute{border-left-color:#19733a}.legacy-head{display:flex;justify-content:space-between;gap:1rem;margin-bottom:12px}.legacy-head h3{font-family:'Barlow Condensed',Arial,sans-serif;font-size:26px;text-transform:uppercase;margin:0;line-height:1;letter-spacing:.6px}.legacy-head p{margin:6px 0 0;color:#6d6257;font-size:15px}.legacy-head span{height:24px;border:1px solid #f0a0ae;background:#fff4f6;color:#d70b3c;padding:4px 9px;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:900;font-size:12px;text-transform:uppercase;letter-spacing:.8px}.enroute .legacy-head span{border-color:#9fc7aa;background:#f2fbf3;color:#19733a}.legacy-order{border-top:1px solid #e4ddd0;padding-top:14px;margin-top:14px}.dw-order-top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.dw-order-top strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:22px;text-transform:uppercase;line-height:1}.dw-order-top span{font-size:14px;color:#7a6f61}.legacy-order small{display:block;text-transform:uppercase;letter-spacing:1px;color:#7a6f61;font-size:12px;margin:2px 0 8px}.dw-deliver-box{background:#e9e2d5;border:1px solid #cfc6b7;border-left:4px solid #d70b3c;padding:11px 14px;margin:10px 0 12px;display:flex;flex-direction:column;gap:2px}.dw-deliver-box b{font-family:'Barlow Condensed',Arial,sans-serif;color:#d70b3c;text-transform:uppercase;letter-spacing:2px;font-size:12px}.dw-deliver-box strong{font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:20px}.dw-deliver-box span{font-size:14px}.dw-note{font-size:14px;margin:0 0 10px;color:#6d6257}.dw-items{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0}.dw-item{background:#f3f0e8;border:1px solid #cfc6b7;padding:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px}.dw-stepper{display:flex;align-items:center;gap:8px}.dw-stepper button{width:28px;height:28px;border:1px solid #cfc6b7;background:#fff;color:#d70b3c;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:900;font-size:17px;cursor:pointer}.dw-stepper button:disabled{opacity:.35}.dw-stepper span{min-width:20px;text-align:center;font-family:'Barlow Condensed',Arial,sans-serif;font-size:20px;font-weight:900}.dw-primary,.dw-green,.dw-secondary{border:0;padding:10px 18px;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:15px;font-weight:900;letter-spacing:.5px;cursor:pointer}.dw-primary{background:#d70b3c;color:#f3f3e8}.dw-green{background:#19733a;color:#f3f3e8}.dw-secondary{background:#e9e2d5;color:#5b5146;border:1px solid #cfc6b7}.dw-primary:disabled,.dw-green:disabled{opacity:.5;cursor:not-allowed}.dw-sign-card{background:#fff;border:1px solid #cfc6b7;margin-bottom:18px;padding:20px}.dw-delivery-line{display:grid;grid-template-columns:160px 1fr 1.5fr;gap:14px;border-top:1px solid #e4ddd0;padding:12px 0;font-size:14px;align-items:center}.dw-delivery-line strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:18px;text-transform:uppercase}.dw-delivery-line span{color:#7a6f61}.dw-delivery-line em{font-style:normal}.dw-signoff{background:#e9e2d5;border:1px solid #cfc6b7;margin-top:14px;padding:16px}.dw-summary{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;border-bottom:1px solid #cfc6b7;padding-bottom:12px;margin-bottom:12px}.dw-summary label,.dw-signoff label{display:block;text-transform:uppercase;letter-spacing:1px;font-size:12px;color:#7a6f61;font-weight:900;margin-bottom:4px}.dw-summary strong{font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:18px}.dw-form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}.dw-signoff input{width:100%;height:44px;border:1px solid #cfc6b7;background:#fff;padding:0 14px;font-size:15px}.dw-signature{height:132px;border:2px dashed #c5bfb3;background:#fff;position:relative;overflow:hidden;touch-action:none;margin-top:6px}.dw-signature canvas{position:absolute;inset:0;width:100%;height:100%}.dw-signature span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#9a8e80;font-size:14px;pointer-events:none;font-style:italic}.dw-actions{display:flex;gap:10px;margin-top:12px}.dw-actions .dw-green{flex:1}@media(max-width:760px){.dw-topbar{height:auto;grid-template-columns:1fr;padding:12px 16px}.dw-nav{justify-content:flex-start;overflow:auto}.dw-user{justify-self:start}.dw-page{padding:22px 14px 44px}.dw-titlebar{align-items:flex-start;gap:14px}.dw-titlebar h1{font-size:32px}.dw-stats div{width:58px;height:54px}.dw-filters{grid-template-columns:1fr}.dw-items{grid-template-columns:1fr}.dw-delivery-line,.dw-summary,.dw-form-row{grid-template-columns:1fr}.dw-stop.legacy{padding:16px}.legacy-head{flex-direction:column}.dw-actions{flex-direction:column}}
+.dw-shell{position:fixed;inset:0;z-index:9999;background:#f3f3e8;color:#15110d;font-family:Barlow,Arial,sans-serif;overflow:auto}.dw-shell *{box-sizing:border-box}.dw-topbar{height:58px;background:#d70b3c;color:#f3f3e8;display:grid;grid-template-columns:220px 1fr 300px;align-items:center;gap:1rem;padding:0 22px;box-shadow:0 4px 18px rgba(0,0,0,.22);position:sticky;top:0;z-index:5}.dw-brand span,.dw-brand em,.dw-user span,.dw-titlebar p,.dw-stop-head p,.dw-order span,.dw-order small,.dw-summary label,.dw-signoff label{font-family:'Barlow Condensed',Arial,sans-serif}.dw-brand span{display:block;text-transform:uppercase;font-size:10px;letter-spacing:3px;line-height:1}.dw-brand strong{display:block;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:25px;line-height:.85;letter-spacing:1px}.dw-brand em{display:block;text-transform:uppercase;font-style:normal;font-size:10px;letter-spacing:2px;opacity:.65}.dw-nav{display:flex;justify-content:center;height:100%;align-items:center;gap:4px}.dw-nav button{height:38px;border:0;background:transparent;color:#f3f3e8;padding:0 15px;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:14px;font-weight:900;letter-spacing:.6px;cursor:pointer}.dw-nav button.active{background:rgba(255,255,255,.16);box-shadow:inset 0 -3px 0 #f3f3e8}.dw-user{justify-self:end;display:flex;align-items:center;gap:12px;text-transform:uppercase}.dw-user strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:13px;line-height:1}.dw-user span{font-size:11px;opacity:.75}.dw-user button{border:1px solid rgba(243,243,232,.45);background:transparent;color:#f3f3e8;height:32px;padding:0 12px;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:900;text-transform:uppercase;cursor:pointer}.dw-page{max-width:1180px;margin:0 auto;padding:32px 22px 60px}.dw-titlebar{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #cfc6b7;padding:0 0 18px;margin-bottom:18px}.dw-titlebar h1{font-family:'Barlow Condensed',Arial,sans-serif;font-size:39px;line-height:1;text-transform:uppercase;margin:0;letter-spacing:.5px;color:#d70b3c}.dw-titlebar h1 span{color:#15110d}.dw-titlebar p{margin:3px 0 0;color:#6e6459;font-size:15px}.dw-stats{display:flex;gap:10px}.dw-stats div{width:78px;height:62px;background:#fff;border:1px solid #cfc6b7;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.06)}.dw-stats strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:24px;color:#d70b3c;line-height:1}.dw-stats span{font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:12px;font-weight:900;color:#7a6f61}.dw-alert{background:#f7e1e4;border:1px solid #e8a4b2;color:#d70b3c;padding:12px 16px;margin:14px 0;font-size:14px}.dw-alert.soft{background:#f5dddd}.dw-empty{background:#fff;border:1px solid #cfc6b7;margin:18px 0;padding:36px;text-align:center;color:#7a6f61;font-style:italic}.dw-filters{display:grid;grid-template-columns:1fr 180px 74px;gap:12px;margin:14px 0 20px}.dw-filters input,.dw-filters select{height:38px;border:1px solid #cfc6b7;background:#fff;padding:0 13px;font-size:15px}.dw-filters input:focus,.dw-filters select:focus,.dw-signoff input:focus{outline:1px solid #d70b3c;border-color:#d70b3c}.dw-filters button{border:1px solid #cfc6b7;background:#e9e2d5;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:900;text-transform:uppercase;cursor:pointer}.dw-vendor h2,.dw-sign-card h2{font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;letter-spacing:3px;font-size:14px;color:#d70b3c;margin:18px 0 10px}.dw-stop.legacy{background:#fff;border:1px solid #cfc6b7;border-left:5px solid #d70b3c;padding:20px 22px;margin-bottom:12px;box-shadow:0 2px 6px rgba(0,0,0,.05)}.dw-stop.legacy.enroute{border-left-color:#19733a}.legacy-head{display:flex;justify-content:space-between;gap:1rem;margin-bottom:12px}.legacy-head h3{font-family:'Barlow Condensed',Arial,sans-serif;font-size:26px;text-transform:uppercase;margin:0;line-height:1;letter-spacing:.6px}.legacy-head p{margin:6px 0 0;color:#6d6257;font-size:15px}.legacy-head span{height:24px;border:1px solid #f0a0ae;background:#fff4f6;color:#d70b3c;padding:4px 9px;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:900;font-size:12px;text-transform:uppercase;letter-spacing:.8px}.enroute .legacy-head span{border-color:#9fc7aa;background:#f2fbf3;color:#19733a}.legacy-order{border-top:1px solid #e4ddd0;padding-top:14px;margin-top:14px}.dw-order-top{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}.dw-order-top strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:22px;text-transform:uppercase;line-height:1}.dw-order-top span{font-size:14px;color:#7a6f61}.legacy-order small{display:block;text-transform:uppercase;letter-spacing:1px;color:#7a6f61;font-size:12px;margin:2px 0 8px}.dw-deliver-box{background:#e9e2d5;border:1px solid #cfc6b7;border-left:4px solid #d70b3c;padding:11px 14px;margin:10px 0 12px;display:flex;flex-direction:column;gap:2px}.dw-deliver-box b{font-family:'Barlow Condensed',Arial,sans-serif;color:#d70b3c;text-transform:uppercase;letter-spacing:2px;font-size:12px}.dw-deliver-box strong{font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:20px}.dw-deliver-box span{font-size:14px}.dw-note{font-size:14px;margin:0 0 10px;color:#6d6257}.dw-items{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0}.dw-item{background:#f3f0e8;border:1px solid #cfc6b7;padding:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px}.dw-stepper{display:flex;align-items:center;gap:8px}.dw-stepper button{width:28px;height:28px;border:1px solid #cfc6b7;background:#fff;color:#d70b3c;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:900;font-size:17px;cursor:pointer}.dw-stepper button:disabled{opacity:.35}.dw-stepper span{min-width:20px;text-align:center;font-family:'Barlow Condensed',Arial,sans-serif;font-size:20px;font-weight:900}.dw-order-actions{display:flex;gap:8px;margin-top:10px}.dw-primary,.dw-green,.dw-secondary,.dw-no{border:0;padding:10px 18px;font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:15px;font-weight:900;letter-spacing:.5px;cursor:pointer}.dw-primary{background:#d70b3c;color:#f3f3e8}.dw-no{background:#fff;color:#6d6257;border:1px solid #cfc6b7}.dw-green{background:#19733a;color:#f3f3e8}.dw-secondary{background:#e9e2d5;color:#5b5146;border:1px solid #cfc6b7}.dw-primary:disabled,.dw-green:disabled,.dw-no:disabled{opacity:.5;cursor:not-allowed}.dw-sign-card{background:#fff;border:1px solid #cfc6b7;margin-bottom:18px;padding:20px}.dw-delivery-line{display:grid;grid-template-columns:160px 1fr 1.5fr;gap:14px;border-top:1px solid #e4ddd0;padding:12px 0;font-size:14px;align-items:center}.dw-delivery-line strong{font-family:'Barlow Condensed',Arial,sans-serif;font-size:18px;text-transform:uppercase}.dw-delivery-line span{color:#7a6f61}.dw-delivery-line em{font-style:normal}.dw-signoff{background:#e9e2d5;border:1px solid #cfc6b7;margin-top:14px;padding:16px}.dw-summary{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;border-bottom:1px solid #cfc6b7;padding-bottom:12px;margin-bottom:12px}.dw-summary label,.dw-signoff label{display:block;text-transform:uppercase;letter-spacing:1px;font-size:12px;color:#7a6f61;font-weight:900;margin-bottom:4px}.dw-summary strong{font-family:'Barlow Condensed',Arial,sans-serif;text-transform:uppercase;font-size:18px}.dw-form-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}.dw-signoff input{width:100%;height:44px;border:1px solid #cfc6b7;background:#fff;padding:0 14px;font-size:15px}.dw-signature{height:132px;border:2px dashed #c5bfb3;background:#fff;position:relative;overflow:hidden;touch-action:none;margin-top:6px}.dw-signature canvas{position:absolute;inset:0;width:100%;height:100%}.dw-signature span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#9a8e80;font-size:14px;pointer-events:none;font-style:italic}.dw-actions{display:flex;gap:10px;margin-top:12px}.dw-actions .dw-green{flex:1}@media(max-width:760px){.dw-topbar{height:auto;grid-template-columns:1fr;padding:12px 16px}.dw-nav{justify-content:flex-start;overflow:auto}.dw-user{justify-self:start}.dw-page{padding:22px 14px 44px}.dw-titlebar{align-items:flex-start;gap:14px}.dw-titlebar h1{font-size:32px}.dw-stats{flex-wrap:wrap}.dw-stats div{width:66px;height:54px}.dw-filters{grid-template-columns:1fr}.dw-items{grid-template-columns:1fr}.dw-order-actions,.dw-delivery-line,.dw-summary,.dw-form-row{grid-template-columns:1fr;flex-direction:column}.dw-stop.legacy{padding:16px}.legacy-head{flex-direction:column}.dw-actions{flex-direction:column}}
 `;
