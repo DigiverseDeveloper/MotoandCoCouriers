@@ -11,7 +11,6 @@ const codeWindowMs = 10 * 60 * 1000;
 
 const staffUsers = [
   { id: 'admin', name: 'Super Admin', email: 'admin@motoandco.com.au', role: 'admin' },
-  { id: 'drv1', name: 'Jake Morrow', email: 'jake@motoandco.com.au', role: 'driver' },
 ];
 
 function response(statusCode, body, extraHeaders = {}) {
@@ -49,6 +48,7 @@ function sessionCookieFor(user) {
     businessName: user.businessName,
     zohoContactId: user.zohoContactId,
     zohoAccountId: user.zohoAccountId,
+    zohoUserId: user.zohoUserId,
     exp: Date.now() + sessionMaxAgeSeconds * 1000,
   })).toString('base64url');
   const signature = signSessionPayload(payload);
@@ -141,12 +141,46 @@ function contactToClient(contact) {
   };
 }
 
+function zohoUserToStaff(user, role) {
+  const email = user.email || user.Email;
+  return {
+    id: `crm_user_${user.id}`,
+    role,
+    name: user.full_name || user.Full_Name || user.name || user.Name || email,
+    email,
+    zohoUserId: user.id,
+  };
+}
+
+async function findZohoStaffUser(role, email) {
+  const token = await accessTokenForCRM();
+  if (!token) return null;
+
+  const userType = role === 'admin' ? 'AdminUsers' : 'ActiveUsers';
+  const result = await zohoRequest({
+    token,
+    path: `/crm/${zohoCrmVersion}/users?type=${encodeURIComponent(userType)}`,
+  });
+
+  const cleanEmail = normaliseEmail(email);
+  const users = result.users || result.data || [];
+  const match = users.find(user => normaliseEmail(user.email || user.Email) === cleanEmail);
+  return match ? zohoUserToStaff(match, role) : null;
+}
+
 async function findUser(role, email) {
   const cleanEmail = normaliseEmail(email);
   if (!cleanEmail) return null;
 
   if (role !== 'client') {
-    return staffUsers.find(user => user.role === role && normaliseEmail(user.email) === cleanEmail) || null;
+    const localUser = staffUsers.find(user => user.role === role && normaliseEmail(user.email) === cleanEmail);
+    if (localUser) return localUser;
+
+    try {
+      return await findZohoStaffUser(role, cleanEmail);
+    } catch (error) {
+      throw new Error(`Could not check Zoho CRM users for ${role} login. The CRM refresh token may need the ZohoCRM.users.READ permission. ${error instanceof Error ? error.message : ''}`.trim());
+    }
   }
 
   const token = await accessTokenForCRM();
