@@ -25,10 +25,6 @@ function parseBody(event) {
   return JSON.parse(event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body);
 }
 
-function normalise(value) {
-  return String(value || '').trim();
-}
-
 function dealStage(key) {
   const defaults = {
     ORDER_PLACED: 'Order Placed',
@@ -45,10 +41,21 @@ function dealPipeline() {
   return process.env.ZOHO_DEAL_PIPELINE || 'Courier Pipeline';
 }
 
-function zohoDate(value = new Date()) {
+function zohoDateTime(value = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 10);
-  return date.toISOString().slice(0, 10);
+  if (Number.isNaN(date.getTime())) return zohoDateTime(new Date());
+  const parts = new Intl.DateTimeFormat('en-AU', {
+    timeZone: 'Australia/Brisbane',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const item = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${item.year}-${item.month}-${item.day}T${item.hour}:${item.minute}:${item.second}+10:00`;
 }
 
 function pickupFields({ outcome, actualPickupAt, pickupNotes, requestedPickupDate }) {
@@ -56,13 +63,11 @@ function pickupFields({ outcome, actualPickupAt, pickupNotes, requestedPickupDat
   const outcomeField = process.env.ZOHO_DEAL_FIELD_PICKUP_OUTCOME || 'Pickup_Outcome';
   const notesField = process.env.ZOHO_DEAL_FIELD_PICKUP_NOTES || 'Pickup_Notes';
   const runDateField = process.env.ZOHO_DEAL_FIELD_REQUESTED_PICKUP_DATE || 'Milk_Run_Date';
-  const timestamp = actualPickupAt || new Date().toISOString();
-  const noteParts = [pickupNotes, timestamp ? `Recorded at ${timestamp}` : ''].filter(Boolean);
 
   return compact({
-    [actualField]: actualPickupAt ? zohoDate(actualPickupAt) : undefined,
+    [actualField]: actualPickupAt ? zohoDateTime(actualPickupAt) : undefined,
     [outcomeField]: outcome,
-    [notesField]: noteParts.join('\n'),
+    [notesField]: pickupNotes,
     [runDateField]: requestedPickupDate || undefined,
   });
 }
