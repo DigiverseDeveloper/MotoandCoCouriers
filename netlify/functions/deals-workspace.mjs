@@ -4,7 +4,7 @@ const zohoAccountsUrl = (process.env.ZOHO_ACCOUNTS_URL || 'https://accounts.zoho
 const zohoApiDomain = (process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com.au').replace(/\/$/, '');
 const zohoCrmVersion = process.env.ZOHO_CRM_VERSION || 'v8';
 const tokenCache = new Map();
-const staffEmails = new Set(['admin@motoandco.com.au', 'jake@motoandco.com.au']);
+const staffEmails = new Set(['admin@motoandco.com.au', 'jake@motoandco.com.au', 'stephen@motoandco.com.au', 'gcmtm12@gmail.com']);
 const sessionCookieName = 'motoco_session';
 
 function response(statusCode, body) {
