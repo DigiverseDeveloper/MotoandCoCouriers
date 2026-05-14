@@ -63,6 +63,10 @@ function pickupItemsFromCard(card) {
   return items;
 }
 
+function hasAnyPickupItems(items) {
+  return Object.values(items || {}).some(value => Number(value || 0) > 0);
+}
+
 async function apiJSON(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
@@ -203,6 +207,7 @@ export default function DriverPickupOutcomeBridge() {
 
       if (text === "confirm this pickup") {
         const pickupItems = pickupItemsFromCard(card);
+        if (!hasAnyPickupItems(pickupItems)) return;
         setTimeout(() => {
           updatePickupOutcome(order, {
             outcome: "Picked Up",
